@@ -3229,12 +3229,13 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       const names = batch.decks.flatMap((entry) => entry.request.squad);
       const portraits = await loadPortraits(names, catalogByName, import.meta.env.BASE_URL);
       const battle = readBattle();
+      const deployedUrl = new URL(import.meta.env.BASE_URL, window.location.href);
       const meta: ReportMeta = {
         enemyDef: battle.enemyDef,
         enemyCode: battle.enemyCode,
         corePx: battle.coreEnabled ? battle.corePx : 0,
         hasParts: battle.hasParts,
-        siteUrl: 'moris-kr.github.io/nikke-calc',
+        siteUrl: `${deployedUrl.host}${deployedUrl.pathname}`.replace(/\/$/, ''),
         // 덱에 붙인 이름을 이미지에도 잇는다 — 자료를 모을 때 한 장으로 끝나게.
         deckNames: Object.fromEntries(decks.map((deck) => [deck.id, deckLabelFull(deck)])),
       };
