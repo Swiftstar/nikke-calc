@@ -1,5 +1,3 @@
-// @vitest-environment jsdom
-
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -13,7 +11,6 @@ import {
   validateRequest,
 } from './model';
 import type { BattleSettings, DeckState, SimulationRequest, SimulationResult } from './types';
-import { setLocale } from './i18n';
 
 const valid: SimulationRequest = {
   squad: ['리타'],
@@ -331,15 +328,6 @@ describe('formatDamage', () => {
     expect(formatDamage(999_999)).toBe('999,999');
   });
 
-  it('uses zh-TW labels and number formatting without changing requests', () => {
-    setLocale('zh-TW');
-    expect(formatDamage(3_207_003_887)).toBe('32.07 億');
-    expect(validateRequest({ ...valid, duration: 181 }))
-      .toContain('戰鬥時間必須介於 10 至 180 秒。');
-    expect(normalizeRequest(valid).squad).toEqual(['리타']);
-    setLocale('ko');
-  });
-
   it('carries the collection choice into the request and the cache key', () => {
     // normalizeCharacters는 필드를 하나씩 옮겨 담는 화이트리스트다. 빠뜨리면 설정이
     // 요청 직전에 조용히 사라지고 결과가 기본값으로 나온다 — 실제로 그랬다.
@@ -401,5 +389,37 @@ describe('formatDamage', () => {
     expect(validateRequest({ ...valid, burstRegenTime: 21 }))
       .toContain('버스트 게이지 충전 시간은 0~20초여야 합니다.');
     expect(validateRequest({ ...valid, burstRegenTime: 2.8 })).toEqual([]);
+  });
+});
+
+describe('핵', () => {
+  const deck: DeckState = { id: 1, squad: ['리타'], characters: {} };
+
+  it('안 켰으면 요청에 아예 없다', () => {
+    // 켠 적 없는 사람의 캐시 키가 갈리면 예전 결과가 통째로 버려진다.
+    expect(requestForDeck(deck, battle)).not.toHaveProperty('hacks');
+    expect(requestForDeck(deck, {
+      ...battle,
+      hacks: { burstCharge: false, infiniteAmmo: false, alwaysCrit: false, damageMult: 1 },
+    })).not.toHaveProperty('hacks');
+  });
+
+  it('켠 것이 있으면 정규화해 싣는다', () => {
+    const request = requestForDeck(deck, {
+      ...battle,
+      hacks: { burstCharge: true, infiniteAmmo: false, alwaysCrit: false, damageMult: 0 },
+    });
+    // 말이 안 되는 배수(0)는 1로 돌아가고, 켠 스위치는 그대로 실린다.
+    expect(request.hacks)
+      .toEqual({ burstCharge: true, infiniteAmmo: false, alwaysCrit: false, damageMult: 1 });
+  });
+
+  it('핵이 다르면 캐시 키도 다르다', () => {
+    const plain = requestForDeck(deck, battle);
+    const hacked = requestForDeck(deck, {
+      ...battle,
+      hacks: { burstCharge: false, infiniteAmmo: false, alwaysCrit: true, damageMult: 1 },
+    });
+    expect(cacheKey(hacked, 'v1')).not.toBe(cacheKey(plain, 'v1'));
   });
 });

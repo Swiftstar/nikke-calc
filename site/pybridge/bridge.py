@@ -12,6 +12,7 @@ from calculator.customization import (
     normalize_character_overrides,
     normalize_console,
     normalize_element_windows,
+    normalize_hacks,
     normalize_immune_windows,
     normalize_normal_hit_coeff,
     normalize_burst_reaction,
@@ -35,6 +36,121 @@ TIMELINE_BUCKET = 1
 # 「정밀 분석」에서 쓰는 칸 크기(초). 대미지는 원래부터 히트마다 정수로 정확히 세므로
 # 이 값이 **정확도를 바꾸지는 않는다** — 얼마나 잘게 나눠 보여 줄지만 정한다.
 FINE_BUCKET = 0.1
+
+
+# 보스 메이커의 사격 트랙이 쓰는 칸 크기(초). 히트를 낱개로 보내면 180초 한 판이
+# 수만 건이라(MG 하나가 1만 발을 넘긴다) 옮기는 것도 그리는 것도 감당이 안 된다 —
+# 칸마다 «몇 발 · 그중 코어 몇 발»로 접어 보낸다. 그림에 필요한 것은 그 밀도뿐이다.
+SHOT_BUCKET = 0.1
+
+# 무한 장탄의 센티널. 엔진이 `max_ammo`를 999999로 두므로(`timeline.py`) 그 언저리
+# 값은 «무한»이라는 뜻이지 탄창 크기가 아니다.
+AMMO_SENTINEL = 99_999
+
+
+def _build_shots(result, names: list[str], bucket: float = SHOT_BUCKET) -> dict:
+    """캐릭터별 사격 밀도. 보스 캔버스에 «언제 누가 어디에 쏘는가»를 그리는 재료다.
+
+    한 칸에 네 숫자를 센다 — 평타·스킬 딜·코어 명중·폭발. 코어는 조준이 맞았는지를,
+    폭발은 폭발 반경 원을 언제 그릴지를 정하는 데 쓴다.
+    """
+    buckets = int(math.ceil(result.duration / bucket)) if result.duration > 0 else 0
+    empty = {"normal": [0] * buckets, "skill": [0] * buckets,
+             "core": [0] * buckets, "explode": [0] * buckets}
+    chars = {name: {key: list(row) for key, row in empty.items()} for name in names}
+    for hit in result.hits:
+        row = chars.get(hit.caster)
+        if row is None:
+            continue
+        index = int((hit.t + 1e-9) / bucket)
+        if index == buckets:
+            index = buckets - 1
+        if not (0 <= index < buckets):
+            continue
+        tag = hit.hit_tag or ""
+        row["normal" if _is_normal(hit) else "skill"][index] += 1
+        if "core" in tag:
+            row["core"][index] += 1
+        if "explosion" in tag:
+            row["explode"][index] += 1
+    return {"bucket": bucket, "buckets": buckets, "chars": chars}
+
+
+def _burst_skill_name(name: str) -> str:
+    """그 캐릭터의 버스트 이름(스킬3의 이름).
+
+    한 스킬이 효과 여럿으로 쪼개져 들어오고 뒤엣것에는 `템페스트 2`처럼 일련번호가
+    붙는다 — **맨 앞 효과의 이름**이 곧 스킬 이름이라 그것만 쓴다. 화면이 버스트를
+    쓸 때 띄우는 이름이며, 없으면 단계 숫자만으로 보여 준다.
+
+    캐시하지 않는다 — 커스텀 니케는 요청마다 스킬 표에 얹혔다 빠지므로, 한 번 담아
+    두면 다음 요청에서 남의 이름이 나온다.
+    """
+    from calculator import timeline as _tl
+
+    for effect in _tl._PARSED_SKILLS.get(name, []):
+        if effect.get("source") != "스킬3":
+            continue
+        label = str(effect.get("name") or "").rstrip("0123456789 ").strip()
+        if label:
+            return label
+    return ""
+
+
+def _build_states(result, names: list[str], bucket: float = SHOT_BUCKET) -> dict:
+    """캐릭터별 «그때 탄이 몇 발이었나»와 재장전 구간.
+
+    탄환 로그는 **바뀔 때만** 찍히므로 칸마다 값을 앞에서 끌어와 채운다(마지막 값 유지).
+    재장전은 시작·완료 짝을 구간으로 묶고, 끝나지 않은 것은 전투 끝에서 닫는다.
+
+    최대 장탄은 따로 실려 오지 않아 **본 값 중 가장 큰 것**으로 잡는다 — 재장전이 끝나면
+    가득 차므로 실전에서는 그 값이 곧 탄창 크기다(장탄 버프가 도중에 붙으면 그중 가장
+    큰 값이 남는다).
+
+    다만 **무한 장탄 구간은 빼고 센다.** 엔진은 무한을 센티널(999999)로 두는데, 그것까지
+    최대치로 잡으면 버스트가 끝난 뒤에도 탄창이 무한으로 남는다(나유타 「기억 연소」는
+    8초짜리인데 판 내내 ∞로 보였다). 무한인지는 **그때그때의 값**으로 가른다.
+    """
+    if result.log is None:
+        return {}
+    buckets = int(math.ceil(result.duration / bucket)) if result.duration > 0 else 0
+    chars: dict = {
+        name: {"ammo": [0] * buckets, "reload": [], "maxAmmo": 0} for name in names
+    }
+
+    events: dict[str, list] = {name: [] for name in names}
+    for entry in result.log.ammo_log:
+        if entry.caster in events:
+            events[entry.caster].append((float(entry.t), int(entry.ammo)))
+    for name, log in events.items():
+        log.sort(key=lambda item: item[0])
+        row = chars[name]
+        row["maxAmmo"] = max(
+            (ammo for _, ammo in log if ammo < AMMO_SENTINEL), default=0,
+        )
+        at = 0
+        current = log[0][1] if log else 0
+        for index in range(buckets):
+            edge = (index + 1) * bucket
+            while at < len(log) and log[at][0] < edge:
+                current = log[at][1]
+                at += 1
+            row["ammo"][index] = current
+
+    for entry in result.log.reload_log:
+        row = chars.get(entry.caster)
+        if row is None:
+            continue
+        if "시작" in entry.event:
+            row["reload"].append([round(float(entry.t), 2), None])
+        elif row["reload"] and row["reload"][-1][1] is None:
+            row["reload"][-1][1] = round(float(entry.t), 2)
+    for row in chars.values():
+        for span in row["reload"]:
+            if span[1] is None:
+                span[1] = round(float(result.duration), 2)
+
+    return {"bucket": bucket, "buckets": buckets, "chars": chars}
 
 
 def _build_timeline(result, names: list[str], bucket: float = TIMELINE_BUCKET) -> dict:
@@ -69,7 +185,11 @@ def _build_timeline(result, names: list[str], bucket: float = TIMELINE_BUCKET) -
                 stage = ""
                 if ":" in event.event:
                     stage = event.event.split(":", 1)[1].split(" ", 1)[0]
-                bursts[event.caster].append({"t": round(event.t, 2), "stage": stage})
+                entry = {"t": round(event.t, 2), "stage": stage}
+                skill = _burst_skill_name(event.caster)
+                if skill:
+                    entry["skill"] = skill
+                bursts[event.caster].append(entry)
             elif event.event == "full_burst 시작":
                 pending_start = event.t
             elif event.event == "full_burst 종료" and pending_start is not None:
@@ -440,9 +560,22 @@ def run_request(raw: str) -> str:
     if rng_mode not in ("random", "expected"):
         raise ValueError('난수 모드는 random 또는 expected여야 합니다')
     config_in["rng_mode"] = rng_mode
+    # 파츠 파괴 주기(초). 보스 메이커가 «파츠 체력 ÷ 예상 DPS»로 낸 값을 넘긴다 —
+    # 엔진에는 적 체력 모델이 없어, 파괴는 시각으로만 들어간다(`event:part_destroy`).
+    part_break = payload.get("partBreakInterval")
+    if part_break is not None:
+        interval = float(part_break)
+        if not math.isfinite(interval) or interval < 0:
+            raise ValueError("파츠 파괴 주기는 0 이상이어야 합니다")
+        if interval > 0:
+            config_in["part_break_interval"] = interval
     # 족자 중 버스트 게이지 정지 여부. 안 주면 켠 것으로 본다(인게임 기준).
     blocks = payload.get("immuneBlocksBurst")
     config_in["immune_blocks_burst"] = True if blocks is None else bool(blocks)
+    # 핵. 하나도 안 켰으면 아예 안 싣는다 — 옛 요청과 캐시 키가 갈리지 않게.
+    hacks = normalize_hacks(payload.get("hacks"))
+    if hacks is not None:
+        config_in["cheats"] = hacks
     config = char_spec.build_config(squad, config_in)
     # 평타 계수는 적이 아니라 **우리 쪽 명중**의 문제라 config에 둔다.
     hit_coeff = normalize_normal_hit_coeff(payload.get("normalHitCoeff"))
@@ -462,6 +595,18 @@ def run_request(raw: str) -> str:
         "immune_windows": normalize_immune_windows(payload.get("immuneWindows")),
         "element_windows": normalize_element_windows(payload.get("elementWindows")),
     }
+    # 관통이 꿰뚫는 몸통·파츠 수. 보스 메이커가 그림에서 세어 넘긴다 — 안 주면
+    # 몸통 하나(한 발 = 한 히트)라 기존 계산과 같다.
+    pierce = payload.get("piercePass")
+    if isinstance(pierce, dict):
+        # `or`로 기본값을 주면 0이 1로 둔갑해 잘못된 값이 그대로 통과한다 — 없을 때만 채운다.
+        raw_shapes = pierce.get("shapes")
+        raw_parts = pierce.get("parts")
+        shapes = int(1 if raw_shapes is None else raw_shapes)
+        parts = int(0 if raw_parts is None else raw_parts)
+        if shapes < 1 or parts < 0 or shapes > 20 or parts > 20:
+            raise ValueError("관통 대상 수가 범위를 벗어났습니다")
+        enemy["pierce_pass"] = {"shapes": shapes, "parts": parts}
     result = simulate(
         squad,
         config=config,
@@ -485,4 +630,9 @@ def run_request(raw: str) -> str:
     # 그림은 1초 칸 그대로 쓴다(잘게 떨면 읽기 어렵다) — 이건 내보내기용이다.
     if bool(payload.get("fineTimeline")):
         response["fineTimeline"] = _build_timeline(result, names, FINE_BUCKET)
+    # 보스 메이커 전용 — 사격 밀도. 켤 때만 싣는다(응답이 그만큼 무거워진다).
+    if bool(payload.get("shotTrack")):
+        response["shots"] = _build_shots(result, names)
+        # 사격 트랙을 볼 때는 탄환·재장전도 같이 본다 — 둘이 한 화면에서 읽힌다.
+        response["states"] = _build_states(result, names)
     return json.dumps(response, ensure_ascii=False, separators=(",", ":"))

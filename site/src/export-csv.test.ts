@@ -1,9 +1,6 @@
-// @vitest-environment jsdom
-
 import { describe, expect, it } from 'vitest';
 
 import { csvCell, csvFileName, csvText, damageCsv, perSecondRows, totalRows } from './export-csv';
-import { setLocale } from './i18n';
 import type { BattleTimeline, SimulationResult } from './types';
 
 const timeline = (bucket: number): BattleTimeline => ({
@@ -86,15 +83,5 @@ describe('정밀 수치 내보내기', () => {
     expect(csvFileName('덱 1', new Date(2026, 7, 31))).toBe('니케계산기_덱 1_20260831.csv');
     expect(csvFileName('a/b:c*', new Date(2026, 11, 5))).toBe('니케계산기_abc_20261205.csv');
     expect(csvFileName('   ', new Date(2026, 0, 9))).toBe('니케계산기_계산_20260109.csv');
-  });
-
-  it('zh-TW에서는 머리글·캐릭터명·파일 이름을 현지화한다', () => {
-    setLocale('zh-TW');
-    expect(perSecondRows(timeline(1), ['리타'])[0])
-      .toEqual(['開始（秒）', '結束（秒）', '麗塔', '合計', '累計']);
-    expect(damageCsv(result(), ['리타'])).toContain('妮姬,總傷害');
-    expect(csvFileName('隊伍 1', new Date(2026, 7, 31)))
-      .toBe('NIKKE計算機_隊伍 1_20260831.csv');
-    setLocale('ko');
   });
 });

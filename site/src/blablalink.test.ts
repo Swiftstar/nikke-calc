@@ -1,16 +1,12 @@
-// @vitest-environment jsdom
-
 import { describe, expect, it } from 'vitest';
 import {
   areaToOverrides,
-  blablaServerLabel,
   consoleFrom,
   looksLikeProfileUrl,
   pickArea,
   synchroFrom,
   type RawArea,
 } from './blablalink';
-import { setLocale } from './i18n';
 import type { CharacterMeta, SettingsCatalog } from './types';
 
 const catalog: CharacterMeta[] = [
@@ -67,17 +63,6 @@ describe('looksLikeProfileUrl', () => {
     expect(looksLikeProfileUrl('15361668407129878426')).toBe(true);
     expect(looksLikeProfileUrl('https://example.com/user?openid=abc')).toBe(false);
     expect(looksLikeProfileUrl('  ')).toBe(false);
-  });
-});
-
-describe('localized profile labels', () => {
-  it('keeps Korean by default and translates server labels for zh-TW', () => {
-    setLocale('ko');
-    expect(blablaServerLabel(83)).toBe('한국');
-    setLocale('zh-TW');
-    expect(blablaServerLabel(83)).toBe('韓國');
-    expect(blablaServerLabel(999)).toBe('伺服器 999');
-    setLocale('ko');
   });
 });
 

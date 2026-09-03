@@ -1,4 +1,5 @@
 import type { BurstSequence } from './burst-order';
+import type { HackSettings } from './hacks';
 
 export type ElementCode = '' | '풍압' | '수냉' | '작열' | '전격' | '철갑';
 // 큐브 종류의 정본은 `data/base_stat_tables/cube.json`이며 게임 업데이트로 계속
@@ -134,6 +135,11 @@ export interface SimulationRequest {
   fineTimeline?: boolean;
   /** 족자 중에는 버스트 게이지도 안 찬다고 볼지. */
   immuneBlocksBurst?: boolean;
+  /**
+   * 핵(`site/src/hacks.ts`). 하나라도 켰을 때만 실린다 — 안 켠 요청에는 이 키가
+   * 아예 없어야 캐시 키가 옛 결과와 갈리지 않는다.
+   */
+  hacks?: HackSettings;
   // 무기군별 평타 계수. 실전에서 탄퍼짐으로 빗나가는 탄을 보정한다 — 평타에만 붙고
   // 스킬·버스트와 변신 모드 사격에는 붙지 않는다. 안 주면 데이터 기본값을 쓴다.
   normalHitCoeff?: Record<string, number>;
@@ -144,6 +150,54 @@ export interface SimulationRequest {
   burstRegenTime?: number;
   /** 버스트 반응속도(초). 안 주면 엔진 기본값(0.05)을 쓴다. */
   burstReaction?: number;
+  /**
+   * 파츠 파괴 주기(초). 보스 메이커가 «파츠 체력 ÷ 예상 DPS»로 낸 값을 넘긴다 —
+   * 엔진에는 적 체력이 없어 파괴는 **시각**으로만 들어간다. 0이나 미지정이면 무발동.
+   */
+  partBreakInterval?: number;
+  /** 사격 밀도 트랙을 함께 받을지. 보스 메이커의 타임라인이 쓴다. */
+  shotTrack?: boolean;
+  /**
+   * 관통 사격이 꿰뚫는 몸통·파츠 수. 보스 메이커가 겨냥한 자리에서 세어 보낸다 —
+   * 안 주면 몸통 하나(한 발 = 한 히트)라 지금까지의 계산과 같다.
+   */
+  piercePass?: { shapes: number; parts: number };
+}
+
+/**
+ * 캐릭터별 사격 밀도. 히트를 낱개로 옮기면 180초 한 판이 수만 건이라(MG 하나가
+ * 1만 발을 넘긴다) 칸마다 «몇 발»로 접어 보낸다. 그림에 필요한 것은 그 밀도뿐이다.
+ *
+ * `core`·`explode`는 그 칸의 평타·스킬 안에서 세는 **부분집합**이다. 기대값 모드에서
+ * 코어는 확률로 태우므로, 여기 세는 것은 «확정 코어»뿐이다 — 조준 적중률은 화면이
+ * 탄착군 공식으로 따로 낸다.
+ */
+/**
+ * 캐릭터별 상태 — 그때 탄이 몇 발이었고 언제 재장전했나.
+ *
+ * 최대 장탄은 «본 값 중 가장 큰 것»이다. 재장전이 끝나면 가득 차므로 실전에서는 그
+ * 값이 곧 탄창 크기다. 무한 장탄은 엔진이 센티널(999999)로 두므로 그대로 온다.
+ */
+export interface StateTrack {
+  bucket: number;
+  buckets: number;
+  chars: Record<string, {
+    ammo: number[];
+    /** `[시작, 끝]` 재장전 구간(초) */
+    reload: Array<[number, number]>;
+    maxAmmo: number;
+  }>;
+}
+
+export interface ShotTrack {
+  bucket: number;
+  buckets: number;
+  chars: Record<string, {
+    normal: number[];
+    skill: number[];
+    core: number[];
+    explode: number[];
+  }>;
 }
 
 /** 보스 페이즈 구간. `[from, to)` 반개구간이다. */
@@ -187,6 +241,11 @@ export interface BattleSettings {
    * **버스트 하나하나마다** 더해진다 — 3단계까지 쓰면 그 세 배만큼 늦어진다.
    */
   burstReaction: number;
+  /**
+   * 켜 둔 핵. 인게임에 없는 값을 억지로 켜는 스위치라 **공유 코드에는 담기지 않는다** —
+   * 남이 준 전투 조건을 적용했더니 몰래 핵이 켜져 있는 일은 없어야 한다.
+   */
+  hacks?: HackSettings;
 }
 
 export interface DeckState {
@@ -208,6 +267,12 @@ export interface DeckState {
 export interface CharacterMeta {
   name: string;
   burstStage: string;
+  /**
+   * 그 단계의 **다른 아군이 없을 때만** 설 수 있는 자리(라피 : 레드 후드의 1버).
+   * 엔진은 `burst_stage_override:N`으로 이미 그렇게 굴린다 — 화면의 버스트 순서 표가
+   * 같은 사실을 알아야 그 칸에 세울 수 있다. 없으면 null이다.
+   */
+  altBurstStage?: string | null;
   elementCode: string;
   weaponType: string;
   className: string;
@@ -227,6 +292,8 @@ export interface CharacterMeta {
 export interface BurstCast {
   t: number;
   stage: string;
+  /** 버스트 스킬 이름(스킬3). 옛 결과에는 없다 — 없으면 단계 숫자만 보여 준다. */
+  skill?: string;
 }
 
 export interface BattleTimeline {
@@ -293,6 +360,10 @@ export interface SimulationResult {
   previewNote: string;
   deviations: string;
   timeline?: BattleTimeline;
+  /** 보스 메이커의 사격 트랙. `shotTrack`을 켠 요청에만 실린다. */
+  shots?: ShotTrack;
+  /** 캐릭터별 탄환·재장전. 사격 트랙과 함께 온다. */
+  states?: StateTrack;
   /** 감시 대상 버프의 실제 수령자 — `{시전자: [...]}`. 구버전 캐시에는 없다. */
   buffTargets?: Record<string, BuffTargetRow[]>;
   /** 0.1초 칸으로 나눈 같은 결과. `fineTimeline`을 켠 요청에만 실려 온다. */
@@ -386,6 +457,14 @@ export interface SettingsCatalog {
   buffTargetWatch: Record<string, Array<{ buff: string; label: string }>>;
   // 무기군별 평타 계수 기본값 (`data/weapon_mechanics.json`).
   normalHitCoeff: Record<string, number>;
+  /**
+   * 탄착군 — 보스 메이커가 사격 원을 그리는 표. 계산기 본체와 **같은 값**이라
+   * 화면의 원과 실제 코어 명중률이 어긋나지 않는다. 옛 설정에는 없을 수 있다.
+   */
+  accuracy?: {
+    modelN: number;
+    weapons: Record<string, { baseDiameter: number; accSlope: number }>;
+  };
   consoleClasses: string[];
   consoleCompanies: string[];
   overloadFields: Record<string, NumericFieldMeta>;

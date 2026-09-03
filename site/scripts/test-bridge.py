@@ -13,6 +13,41 @@ from context.spec import is_preview
 from context.spec import _nikke as parsed_nikke
 
 
+class HackBridgeTest(unittest.TestCase):
+    """핵(`calculator/cheats.py`)이 payload에서 엔진까지 이어지는지."""
+
+    BASE = {
+        "squad": ["리타"],
+        "duration": 20,
+        "enemyDef": 31_784,
+        "enemyCode": "",
+        "corePx": 0,
+        "hasParts": False,
+        "seed": 42,
+    }
+
+    def _total(self, hacks=None):
+        payload = {**self.BASE, **({"hacks": hacks} if hacks is not None else {})}
+        return json.loads(run_request(json.dumps(payload, ensure_ascii=False)))["squadTotal"]
+
+    def test_damage_mult_reaches_the_engine(self):
+        plain = self._total()
+        self.assertAlmostEqual(self._total({"damageMult": 7}) / plain, 7.0, places=3)
+
+    def test_all_off_is_the_same_as_no_hacks(self):
+        # 켠 것이 없으면 요청에 아예 안 실려야 한다 — 옛 결과와 한 톨도 달라지지 않는다.
+        plain = self._total()
+        self.assertEqual(self._total({}), plain)
+        self.assertEqual(self._total({"alwaysCrit": False, "damageMult": 1}), plain)
+
+    def test_always_crit_reaches_the_engine(self):
+        self.assertGreater(self._total({"alwaysCrit": True}), self._total())
+
+    def test_bad_multiplier_is_refused(self):
+        with self.assertRaises(ValueError):
+            self._total({"damageMult": 0})
+
+
 class BrowserBridgeTest(unittest.TestCase):
     def test_growth_stage_changes_the_engine_result(self):
         payload = {
@@ -647,6 +682,138 @@ class BrowserBridgeTest(unittest.TestCase):
         }
         got = json.loads(run_request(json.dumps(payload, ensure_ascii=False)))
         self.assertNotIn("fineTimeline", got)
+
+    def test_shot_track_counts_every_hit_once(self):
+        """보스 메이커의 사격 트랙 — 낱개 히트를 칸마다 접어 보낸다.
+
+        180초 한 판이 수만 건이라 낱개로는 못 옮긴다. 접는 과정에서 히트를 흘리면
+        화면의 밀도가 실제와 어긋나므로, 평타+스킬 합이 총 히트 수와 같아야 한다.
+        """
+        payload = {
+            "squad": ["리타", "크라운", "레이븐"], "duration": 20, "enemyDef": 31_784,
+            "enemyCode": "", "corePx": 52, "hasParts": True, "seed": 42,
+            "rngMode": "expected", "shotTrack": True,
+        }
+        got = json.loads(run_request(json.dumps(payload, ensure_ascii=False)))
+        shots = got["shots"]
+        self.assertEqual(shots["bucket"], 0.1)
+        self.assertEqual(shots["buckets"], 200)
+        counted = 0
+        for name in ("리타", "크라운", "레이븐"):
+            row = shots["chars"][name]
+            self.assertEqual(len(row["normal"]), 200)
+            counted += sum(row["normal"]) + sum(row["skill"])
+            # 코어·폭발은 그 칸의 평타·스킬 안에서 세는 부분집합이다.
+            self.assertLessEqual(sum(row["core"]), sum(row["normal"]) + sum(row["skill"]))
+        self.assertEqual(counted, got["hitCount"])
+
+    def test_burst_casts_carry_the_burst_skill_name(self):
+        """버스트를 쓸 때 띄울 이름 — 스킬3의 이름이다.
+
+        한 스킬이 효과 여럿으로 쪼개져 들어오고 뒤엣것에는 「템페스트 2」처럼 일련번호가
+        붙는다. 맨 앞 효과의 이름이 곧 스킬 이름이다.
+        """
+        payload = {
+            "squad": ["홍련 : 흑영", "크라운", "리타"], "duration": 40, "enemyDef": 31_784,
+            "enemyCode": "", "corePx": 0, "hasParts": False, "seed": 42, "rngMode": "expected",
+        }
+        got = json.loads(run_request(json.dumps(payload, ensure_ascii=False)))
+        casts = got["timeline"]["bursts"]
+        self.assertEqual(casts["홍련 : 흑영"][0]["skill"], "화무십일홍 · 만개")
+        self.assertEqual(casts["크라운"][0]["skill"], "라스트 킹덤")
+        self.assertEqual(casts["리타"][0]["skill"], "더블 부스트")
+        # 단계도 그대로 실린다 — 이름이 없는 옛 결과는 이것만으로 보여 준다.
+        self.assertEqual(casts["홍련 : 흑영"][0]["stage"], "3")
+
+    def test_shot_track_is_left_out_unless_asked(self):
+        payload = {
+            "squad": ["리타"], "duration": 10, "enemyDef": 31_784, "enemyCode": "",
+            "corePx": 0, "hasParts": False, "seed": 42,
+        }
+        got = json.loads(run_request(json.dumps(payload, ensure_ascii=False)))
+        self.assertNotIn("shots", got)
+
+    def test_part_break_interval_reaches_the_engine(self):
+        """파츠 파괴 주기 — 보스 메이커가 «파츠 체력 ÷ DPS»로 낸 시각을 넘긴다.
+
+        엔진에는 적 체력이 없어 파괴는 시각으로만 들어간다. 주기를 주면 파괴에
+        반응하는 스킬이 걸리므로 총딜이 달라져야 한다.
+        """
+        base = {
+            "squad": ["레이븐", "크라운", "리타"], "duration": 60, "enemyDef": 31_784,
+            "enemyCode": "", "corePx": 0, "hasParts": True, "seed": 42,
+            "rngMode": "expected",
+        }
+        without = json.loads(run_request(json.dumps(base, ensure_ascii=False)))
+        with_break = json.loads(run_request(
+            json.dumps({**base, "partBreakInterval": 8.0}, ensure_ascii=False)))
+        # 레이븐 「일점 공격」은 파츠 파괴에 반응한다 — 파괴가 없으면 영원히 안 걸린다.
+        self.assertGreater(with_break["charTotals"]["레이븐"], without["charTotals"]["레이븐"])
+
+    def test_infinite_ammo_does_not_leak_past_the_burst(self):
+        """무한 장탄은 그 구간만이다.
+
+        엔진은 무한을 센티널(999999)로 두는데, 그것까지 «최대 장탄»으로 잡으면 8초짜리
+        버스트가 끝난 뒤에도 탄창이 무한으로 남는다. 나유타 「기억 연소」가 그랬다.
+        """
+        payload = {
+            "squad": ["나유타", "크라운", "리타"], "duration": 60, "enemyDef": 31_784,
+            "enemyCode": "", "corePx": 0, "hasParts": False, "seed": 42,
+            "rngMode": "expected", "shotTrack": True,
+        }
+        got = json.loads(run_request(json.dumps(payload, ensure_ascii=False)))
+        row = got["states"]["chars"]["나유타"]
+
+        # 최대 장탄은 실제 탄창이다 — 센티널이 아니다.
+        self.assertLess(row["maxAmmo"], 99_999)
+        self.assertGreater(row["maxAmmo"], 0)
+        # 무한인 칸은 있지만 판 전체는 아니다.
+        infinite = [at for at, ammo in enumerate(row["ammo"]) if ammo >= 99_999]
+        self.assertGreater(len(infinite), 0)
+        self.assertLess(len(infinite), len(row["ammo"]) // 2)
+        # 무한 구간은 한 덩어리로 이어진다(버스트 한 번).
+        self.assertEqual(infinite[-1] - infinite[0] + 1, len(infinite))
+
+    def test_pierce_passes_through_shapes_and_parts(self):
+        """관통은 꿰뚫은 만큼 때린다 — 파츠에 든 히트는 파츠 판정을 받는다.
+
+        안 주면 몸통 하나(한 발 = 한 히트)라 지금까지의 계산과 같아야 한다.
+        그레이브는 버스트 중에 관통이 걸린다.
+        """
+        base = {
+            "squad": ["그레이브", "크라운", "리타"], "duration": 120, "enemyDef": 31_784,
+            "enemyCode": "", "corePx": 0, "hasParts": True, "seed": 42, "rngMode": "expected",
+        }
+        plain = json.loads(run_request(json.dumps(base, ensure_ascii=False)))
+        through = json.loads(run_request(json.dumps(
+            {**base, "piercePass": {"shapes": 1, "parts": 2}}, ensure_ascii=False)))
+        twice = json.loads(run_request(json.dumps(
+            {**base, "piercePass": {"shapes": 2, "parts": 0}}, ensure_ascii=False)))
+
+        # 파츠 둘을 더 꿰뚫으면 그만큼 히트가 늘고 딜도 오른다.
+        self.assertGreater(through["charTotals"]["그레이브"], plain["charTotals"]["그레이브"])
+        self.assertGreater(through["hitCount"], plain["hitCount"])
+        # 몸통 둘보다 «몸통 하나 + 파츠 둘»이 더 많이 때린다(히트가 하나 더 많다).
+        self.assertGreater(through["charTotals"]["그레이브"], twice["charTotals"]["그레이브"])
+        # 관통이 없는 동료는 한 자리도 안 바뀐다.
+        self.assertEqual(through["charTotals"]["크라운"], plain["charTotals"]["크라운"])
+
+    def test_rejects_a_bad_pierce_pass(self):
+        payload = {
+            "squad": ["리타"], "duration": 10, "enemyDef": 31_784, "enemyCode": "",
+            "corePx": 0, "hasParts": True, "seed": 42,
+            "piercePass": {"shapes": 0, "parts": 0},
+        }
+        with self.assertRaises(ValueError):
+            run_request(json.dumps(payload, ensure_ascii=False))
+
+    def test_rejects_a_negative_part_break_interval(self):
+        payload = {
+            "squad": ["리타"], "duration": 10, "enemyDef": 31_784, "enemyCode": "",
+            "corePx": 0, "hasParts": True, "seed": 42, "partBreakInterval": -1,
+        }
+        with self.assertRaises(ValueError):
+            run_request(json.dumps(payload, ensure_ascii=False))
 
     def test_buff_span_carries_who_actually_got_it_when_the_target_shifts(self):
         """대상이 발동마다 갈리는 버프는 **구간마다** 누가 받았는지 적는다.

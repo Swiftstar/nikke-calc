@@ -4,7 +4,6 @@ import type {
   CustomCharacter,
   GrowthOption,
 } from './types';
-import { t } from './i18n';
 
 export const CUSTOM_KEY = 'nikke-custom-v1';
 
@@ -116,7 +115,7 @@ export function unsupportedEffects(skills: unknown[]): string[] {
     const target = String(skill.target ?? '');
     const trigger = isRecord(skill.trigger) ? skill.trigger : {};
     const timings = Array.isArray(trigger.timing) ? trigger.timing.map(String) : [];
-    const name = String(skill.name ?? t('character.noSettings'));
+    const name = String(skill.name ?? '(이름 없음)');
     const statOk = skill.type === 'damage'
       ? DAMAGE_STATS.has(prefix(stat))
       : BUFF_STATS.has(stat);
@@ -133,30 +132,30 @@ export function parseCustomInput(text: string): CustomCharacter {
   try {
     data = JSON.parse(text.trim());
   } catch {
-    throw new Error(t('custom.errorJson'));
+    throw new Error('JSON 형식이 아닙니다. LLM이 준 JSON만 붙여넣어 주세요.');
   }
-  if (!isRecord(data)) throw new Error(t('custom.errorObject'));
+  if (!isRecord(data)) throw new Error('최상위는 객체여야 합니다.');
   const name = typeof data.name === 'string' ? data.name.trim() : '';
-  if (!name) throw new Error(t('custom.errorName'));
-  if (!isRecord(data.nikke)) throw new Error(t('custom.errorNikke'));
-  if (!Array.isArray(data.skills)) throw new Error(t('custom.errorSkills'));
+  if (!name) throw new Error('name(이름)이 필요합니다.');
+  if (!isRecord(data.nikke)) throw new Error('nikke(스탯) 객체가 필요합니다.');
+  if (!Array.isArray(data.skills)) throw new Error('skills(스킬 배열)가 필요합니다.');
 
   const nikke = data.nikke;
   const required = ['rarity', 'element_code', 'class', 'weapon_type', 'burst_stage',
     'burst_cooldown', 'max_ammo', 'reload_time', 'fire_rate', 'damage_coeff'];
   const missing = required.filter((f) => nikke[f] === undefined || nikke[f] === null);
-  if (missing.length > 0) throw new Error(t('custom.errorMissing', { fields: missing.join(', ') }));
+  if (missing.length > 0) throw new Error(`nikke에 누락된 항목: ${missing.join(', ')}`);
   if (!WEAPONS.includes(String(nikke.weapon_type))) {
-    throw new Error(t('custom.errorOneOf', { field: 'weapon_type', values: WEAPONS.join('/') }));
+    throw new Error(`weapon_type은 ${WEAPONS.join('/')} 중 하나여야 합니다.`);
   }
   if (!CODES.includes(String(nikke.element_code))) {
-    throw new Error(t('custom.errorOneOf', { field: 'element_code', values: CODES.join('/') }));
+    throw new Error(`element_code는 ${CODES.join('/')} 중 하나여야 합니다.`);
   }
   if (!CLASSES.includes(String(nikke.class))) {
-    throw new Error(t('custom.errorOneOf', { field: 'class', values: CLASSES.join('/') }));
+    throw new Error(`class는 ${CLASSES.join('/')} 중 하나여야 합니다.`);
   }
   if (![1, 2, 3].includes(Number(nikke.burst_stage))) {
-    throw new Error(t('custom.errorBurstStage'));
+    throw new Error('burst_stage는 1, 2, 3 중 하나여야 합니다.');
   }
 
   // 엔진 기본값 보정 (누락 허용 필드)
@@ -177,12 +176,10 @@ export function parseCustomInput(text: string): CustomCharacter {
 
 const growthOptionsFor = (rarity: string): { options: GrowthOption[]; max: number; def: number } => {
   const label = (v: number): string =>
-    v === 0 ? t('custom.growthBase')
-      : v <= 3 ? t('custom.growthLimit', { count: v })
-        : t('custom.growthCore', { count: v - 3 });
+    v === 0 ? '명함' : v <= 3 ? `${v}돌` : `코강 ${v - 3}`;
   const affinity = (v: number): number => (v === 0 ? 10 : v === 1 ? 20 : 30);
   if (rarity === 'R') {
-    return { options: [{ value: 0, label: t('custom.growthBase'), affinity: 10 }], max: 0, def: 0 };
+    return { options: [{ value: 0, label: '명함', affinity: 10 }], max: 0, def: 0 };
   }
   const max = rarity === 'SR' ? 2 : 10;
   const options = Array.from({ length: max + 1 }, (_, v) => ({ value: v, label: label(v), affinity: affinity(v) }));

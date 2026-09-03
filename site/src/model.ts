@@ -1,5 +1,6 @@
 import { sequenceForDeck, trimSequence } from './burst-order';
-import { formatNumber, t } from './i18n';
+import { hacksForRequest } from './hacks';
+import { lang, t } from './i18n';
 import type {
   BatchResult,
   BattleSettings,
@@ -75,6 +76,8 @@ export function normalizeRequest(request: SimulationRequest): SimulationRequest 
       ? { burstSequence: trimSequence(request.burstSequence)! } : {}),
     // 기본값(켜짐)은 요청·캐시 키에서 뺀다.
     ...(request.immuneBlocksBurst === false ? { immuneBlocksBurst: false } : {}),
+    // 핵은 켠 것이 있을 때만 싣는다 — 안 켠 사람의 캐시 키가 갈리지 않게.
+    ...(hacksForRequest(request.hacks) ? { hacks: hacksForRequest(request.hacks)! } : {}),
     // 평타 계수도 캐시 키에 실린다 — 값이 다른 결과가 섞이면 안 된다. 키 순서가
     // 흔들려도 같은 설정이므로 정렬해 싣는다.
     ...(normalizeRecord(request.normalHitCoeff)
@@ -87,6 +90,12 @@ export function normalizeRequest(request: SimulationRequest): SimulationRequest 
     // 기본 레벨(400)은 요청에서 뺀다 — 엔진이 같은 값을 쓰므로 옛 캐시 키와 갈리지 않는다.
     ...(request.synchroLevel !== undefined && request.synchroLevel !== DEFAULT_SYNCHRO_LEVEL
       ? { synchroLevel: Math.trunc(request.synchroLevel) } : {}),
+    // 보스 메이커에서만 쓰는 둘. 안 켠 요청에는 아예 싣지 않는다 — 옛 캐시 키와
+    // 갈리지 않게 하려는 것으로, 다른 필드와 같은 규칙이다.
+    ...(request.partBreakInterval ? { partBreakInterval: request.partBreakInterval } : {}),
+    ...(request.shotTrack ? { shotTrack: true } : {}),
+    ...(request.piercePass && (request.piercePass.shapes > 1 || request.piercePass.parts > 0)
+      ? { piercePass: request.piercePass } : {}),
     ...(request.console ? { console: {
       common_level: Math.trunc(request.console.common_level),
       class_level: normalizeBuckets(request.console.class_level),
@@ -160,83 +169,68 @@ function normalizeCharacters(
   return result;
 }
 
-const localizeConsoleBucket = (bucket: string): string => ({
-  화력형: t('class.attacker'),
-  방어형: t('class.defender'),
-  지원형: t('class.supporter'),
-  엘리시온: t('manufacturer.elysion'),
-  미실리스: t('manufacturer.missilis'),
-  테트라: t('manufacturer.tetra'),
-  필그림: t('manufacturer.pilgrim'),
-  어브노말: t('manufacturer.abnormal'),
-})[bucket] ?? bucket;
-
 export function validateRequest(request: SimulationRequest): string[] {
   const errors: string[] = [];
   const squad = request.squad.map((name) => name.trim()).filter(Boolean);
 
   if (squad.length === 0) {
-    errors.push(t('validate.squadRequired'));
+    errors.push('스쿼드에 캐릭터를 1명 이상 편성해 주세요.');
   } else if (squad.length > 5) {
-    errors.push(t('validate.squadMax'));
+    errors.push('스쿼드는 최대 5명까지 편성할 수 있습니다.');
   }
   if (new Set(squad).size !== squad.length) {
-    errors.push(t('validate.duplicate'));
+    errors.push('같은 캐릭터를 두 번 편성할 수 없습니다.');
   }
   if (!integerInRange(request.duration, 10, 180)) {
-    errors.push(t('validate.duration'));
+    errors.push('전투 시간은 10~180초여야 합니다.');
   }
   if (request.synchroLevel !== undefined && !integerInRange(request.synchroLevel, 1, SYNCHRO_MAX)) {
-    errors.push(t('validate.synchro', { max: SYNCHRO_MAX }));
+    errors.push(`싱크로 레벨은 1~${SYNCHRO_MAX}이어야 합니다.`);
   }
   if (!integerInRange(request.enemyDef, 0, 999_999)) {
-    errors.push(t('validate.defense'));
+    errors.push('적 방어력은 0~999999여야 합니다.');
   }
   if (!integerInRange(request.corePx, 0, 1_000)) {
-    errors.push(t('validate.core'));
+    errors.push('코어 직경은 0~1000px여야 합니다.');
   }
   if (!integerInRange(request.seed, 0, 2_147_483_647)) {
-    errors.push(t('validate.seed'));
+    errors.push('시드는 0~2147483647 사이의 정수여야 합니다.');
   }
   if (request.burstRegenTime !== undefined
       && !(Number.isFinite(request.burstRegenTime)
         && request.burstRegenTime >= 0 && request.burstRegenTime <= 20)) {
-    errors.push(t('validate.charge'));
+    errors.push('버스트 게이지 충전 시간은 0~20초여야 합니다.');
   }
   if (request.burstReaction !== undefined
       && !(Number.isFinite(request.burstReaction)
         && request.burstReaction >= 0 && request.burstReaction <= 3)) {
-    errors.push(t('validate.reaction'));
+    errors.push('버스트 반응속도는 0~3초여야 합니다.');
   }
   // 보스 페이즈 — 시작이 끝보다 뒤면 조용히 뒤집지 않고 막는다. 엔진도 같은 규칙이다.
   const windows: Array<[{ from: number; to: number }, string]> = [
-    ...(request.immuneWindows ?? []).map((w) => [w, t('phase.immune')] as [typeof w, string]),
-    ...(request.elementWindows ?? []).map((w) => [w, t('phase.element')] as [typeof w, string]),
+    ...(request.immuneWindows ?? []).map((w) => [w, '족자'] as [typeof w, string]),
+    ...(request.elementWindows ?? []).map((w) => [w, '속저'] as [typeof w, string]),
   ];
   for (const [w, label] of windows) {
     if (!Number.isFinite(w.from) || !Number.isFinite(w.to)
         || w.from < 0 || w.to > 180 || w.from < 0) {
-      errors.push(t('validate.phaseRange', { label }));
+      errors.push(`${label} 구간은 0~180초여야 합니다.`);
     } else if (w.from >= w.to) {
-      errors.push(t('validate.phaseOrder', { label, from: w.from, to: w.to }));
+      errors.push(`${label} 구간은 시작이 끝보다 앞서야 합니다 (${w.from}~${w.to}).`);
     }
   }
 
   if (request.console) {
     const levels: Array<[number, string]> = [
-      [request.console.common_level, t('console.common')],
+      [request.console.common_level, '공통'],
       ...Object.entries(request.console.class_level)
-        .map(([bucket, level]) => [level, t('validate.consoleClass', {
-          bucket: localizeConsoleBucket(bucket),
-        })] as [number, string]),
+        .map(([bucket, level]) => [level, `클래스(${bucket})`] as [number, string]),
       ...Object.entries(request.console.company_level)
-        .map(([bucket, level]) => [level, t('validate.consoleCompany', {
-          bucket: localizeConsoleBucket(bucket),
-        })] as [number, string]),
+        .map(([bucket, level]) => [level, `기업(${bucket})`] as [number, string]),
     ];
     for (const [level, label] of levels) {
       if (!integerInRange(level, 0, 1_000)) {
-        errors.push(t('validate.consoleRange', { label }));
+        errors.push(`${label} 콘솔 레벨은 0~1000 사이의 정수여야 합니다.`);
       }
     }
   }
@@ -253,16 +247,16 @@ export function validateDecks(decks: DeckState[]): string[] {
   const errors: string[] = [];
   const nonEmpty = decks.filter((deck) => deck.squad.some((name) => name.trim()));
   if (nonEmpty.length === 0) {
-    errors.push(t('validate.deckRequired'));
+    errors.push('캐릭터가 편성된 덱이 하나 이상 필요합니다.');
     return errors;
   }
   for (const deck of nonEmpty) {
     const names = deck.squad.map((name) => name.trim()).filter(Boolean);
     if (names.length > 5) {
-      errors.push(t('validation.deckPrefix', { deck: deck.id, message: t('validate.squadMax') }));
+      errors.push(`덱 ${deck.id}: 캐릭터는 최대 5명까지 편성할 수 있습니다.`);
     }
     if (new Set(names).size !== names.length) {
-      errors.push(t('validation.deckPrefix', { deck: deck.id, message: t('validate.duplicate') }));
+      errors.push(`덱 ${deck.id}: 같은 캐릭터를 두 번 편성할 수 없습니다.`);
     }
   }
   return errors;
@@ -289,6 +283,7 @@ export function requestForDeck(
     elementWindows: battle.elementWindows,
     rngMode: battle.rngMode,
     immuneBlocksBurst: battle.immuneBlocksBurst,
+    ...(hacksForRequest(battle.hacks) ? { hacks: battle.hacks! } : {}),
     normalHitCoeff: battle.normalHitCoeff,
     console: battle.console,
     // 덱마다 따로 잡아 뒀으면 그 값이 이긴다 — 버스트 쿨이 밀리는 덱만 달리 잰다.
@@ -317,15 +312,25 @@ export function aggregateDeckResults(decks: DeckResultEntry[]): BatchResult {
   };
 }
 
+/**
+ * 줄여 쓴 대미지.
+ *
+ * 자릿수를 끊는 자리는 말마다 다르다 — 한국어·일본어는 **네 자리마다**(억·億) 끊고
+ * 영어는 **세 자리마다**(B·M) 끊는다. 1.24억을 영어로 「1.24억」이라 적으면 그건
+ * 번역이 아니라 그냥 안 읽히는 글자다.
+ */
 export function formatDamage(value: number): string {
-  if (Math.abs(value) >= 1_000_000) {
-    return t('format.eok', { value: (value / 100_000_000).toFixed(2) });
+  if (Math.abs(value) < 1_000_000) return Math.round(value).toLocaleString('en-US');
+  if (lang() === 'en') {
+    return Math.abs(value) >= 1_000_000_000
+      ? `${(value / 1_000_000_000).toFixed(2)}B`
+      : `${(value / 1_000_000).toFixed(2)}M`;
   }
-  return formatNumber(Math.round(value));
+  return `${(value / 100_000_000).toFixed(2)}${t('억')}`;
 }
 
 export function formatDps(value: number): string {
-  return t('format.dps', { value: formatDamage(value) });
+  return t('{n}/초', { n: formatDamage(value) });
 }
 
 /**
@@ -336,10 +341,10 @@ export function formatDps(value: number): string {
  * 여기서 정밀해지는 것은 없다 — 있던 자리를 그대로 보일 뿐이다.
  */
 export const formatExactDamage = (value: number): string =>
-  formatNumber(Math.round(value));
+  Math.round(value).toLocaleString('en-US');
 
 /** 줄이지 않은 초당 대미지. 소수점 한 자리까지 — 정수로 자르면 덱 간 차이가 묻힌다. */
 export const formatExactDps = (value: number): string =>
-  t('format.dps', {
-    value: formatNumber(Math.round(value * 10) / 10, { minimumFractionDigits: 1 }),
+  t('{n}/초', {
+    n: (Math.round(value * 10) / 10).toLocaleString('en-US', { minimumFractionDigits: 1 }),
   });

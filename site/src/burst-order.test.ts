@@ -1,5 +1,3 @@
-// @vitest-environment jsdom
-
 import { describe, expect, it } from 'vitest';
 import {
   candidatesFor, cycleLine, cyclesFromTimeline, estimateCycles, picksFrom,
@@ -7,7 +5,6 @@ import {
   type BurstSequence,
 } from './burst-order';
 import type { BattleTimeline, CharacterMeta } from './types';
-import { setLocale } from './i18n';
 
 const meta = (name: string, burstStage: string): CharacterMeta => ({
   name, burstStage, elementCode: '전격', weaponType: 'AR', className: '화력형',
@@ -75,6 +72,23 @@ describe('단계별 후보', () => {
     expect(candidatesFor('1', { squad, metaOf })).toEqual(['리타', '레드 후드', '돌치']);
     expect(candidatesFor('2', { squad, metaOf })).toEqual(['크라운', '레드 후드']);
     expect(candidatesFor('3', { squad, metaOf })).toEqual(['앨리스', '레드 후드']);
+  });
+
+  it('«그 단계 아군이 없으면 내가 선다»는 사람은 정말 아무도 없을 때만 나온다', () => {
+    // 라피 : 레드 후드의 1버(엔진 조건 `no_burst1_ally`). 1버가 따로 있으면 안 나온다.
+    const 라피 = { ...meta('라피 : 레드 후드', '3'), altBurstStage: '1' };
+    const withOther = ['리타', '라피 : 레드 후드'];
+    const alone = ['크라운', '라피 : 레드 후드'];
+    const look = (name: string) => (name === '라피 : 레드 후드' ? 라피 : metaOf(name));
+
+    expect(candidatesFor('1', { squad: withOther, metaOf: look })).toEqual(['리타']);
+    expect(candidatesFor('1', { squad: alone, metaOf: look })).toEqual(['라피 : 레드 후드']);
+    // 제 단계(3버)에는 언제나 선다.
+    expect(candidatesFor('3', { squad: alone, metaOf: look })).toEqual(['라피 : 레드 후드']);
+    // 「버스트 안 씀」이면 대타 자리에도 안 선다.
+    expect(candidatesFor('1', {
+      squad: alone, metaOf: look, skipped: new Set(['라피 : 레드 후드']),
+    })).toEqual([]);
   });
 
   it('「버스트 안 씀」으로 잡아 둔 사람은 후보에서 뺀다', () => {
@@ -162,12 +176,5 @@ describe('한 줄 요약', () => {
   it('빈 사이클은 「자동」이라 적는다', () => {
     expect(cycleLine({ 1: [], 2: [], 3: [] })).toBe('자동');
     expect(cycleLine(undefined)).toBe('자동');
-  });
-
-  it('zh-TW에서는 단계와 캐릭터 표시 이름을 현지화한다', () => {
-    setLocale('zh-TW');
-    expect(cycleLine({ 1: ['리타'], 2: ['크라운'], 3: [] }))
-      .toBe('爆裂階段 1 麗塔 → 爆裂階段 2 皇冠');
-    setLocale('ko');
   });
 });

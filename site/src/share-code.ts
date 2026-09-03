@@ -1,5 +1,4 @@
 import type { BattleSettings, DeckState, ElementWindow, PhaseWindow } from './types';
-import { t } from './i18n';
 
 // 조합 공유 코드 — **누가 편성됐는지(캐릭터 이름)만** 한 줄 텍스트로 주고받는다.
 // 오버로드·공격력·돌파·스킬·큐브·소장품·컨트롤 같은 개인 스펙과 전투 조건은
@@ -24,13 +23,20 @@ export interface SharePayload {
   fiveDeckMode: boolean;
 }
 
-const toBase64Url = (bytes: Uint8Array): string => {
+/**
+ * 코드 본문을 담는 글자꼴. `+`·`/`는 주소나 채팅에서 잘리므로 URL 안전한 것으로 바꾸고
+ * 꼬리의 `=`는 턴다 — 되읽을 때 길이로 도로 채운다.
+ *
+ * 보스 메이커도 같은 함수를 쓴다(`boss-maker.ts`) — 코드가 여러 벌 생기면 한쪽만
+ * 고쳐져 서로 못 읽는 일이 난다.
+ */
+export const toBase64Url = (bytes: Uint8Array): string => {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 };
 
-const fromBase64Url = (text: string): Uint8Array => {
+export const fromBase64Url = (text: string): Uint8Array => {
   const padded = text.replace(/-/g, '+').replace(/_/g, '/')
     + '='.repeat((4 - (text.length % 4)) % 4);
   const binary = atob(padded);
@@ -85,7 +91,7 @@ export function encodeShareCode(decks: DeckState[], fiveDeckMode: boolean): stri
  */
 export function decodeShareCode(code: string, catalogNames: string[] = []): SharePayload {
   const trimmed = code.trim();
-  if (!trimmed) throw new Error(t('share.errorRequired'));
+  if (!trimmed) throw new Error('공유 코드를 입력해 주세요.');
 
   if (trimmed.startsWith(LEGACY_PREFIX)) return decodeLegacy(trimmed.slice(LEGACY_PREFIX.length));
 
@@ -94,12 +100,12 @@ export function decodeShareCode(code: string, catalogNames: string[] = []): Shar
   try {
     bytes = fromBase64Url(body);
   } catch {
-    throw new Error(t('share.errorDecode'));
+    throw new Error('공유 코드를 해석하지 못했습니다. 코드 전체를 그대로 붙여넣었는지 확인해 주세요.');
   }
   // 옛 형식을 접두사 없이 붙여넣는 경우가 있어, base64가 JSON이면 그쪽으로 넘긴다.
   if (bytes[0] === 0x7b) return decodeLegacy(body);
   if (bytes.length < 3) {
-    throw new Error(t('share.errorShort'));
+    throw new Error('공유 코드가 너무 짧습니다. 코드 전체를 그대로 붙여넣었는지 확인해 주세요.');
   }
 
   const byHash = new Map<number, string>();
@@ -110,19 +116,19 @@ export function decodeShareCode(code: string, catalogNames: string[] = []): Shar
 
   const fiveDeckMode = (bytes[0]! & 1) === 1;
   const deckCount = bytes[1]!;
-  if (deckCount < 1 || deckCount > 5) throw new Error(t('share.errorDeckCount'));
+  if (deckCount < 1 || deckCount > 5) throw new Error('공유 코드의 덱 수가 올바르지 않습니다.');
 
   const decks: Array<{ squad: string[] }> = [];
   let cursor = 2;
   for (let d = 0; d < deckCount; d += 1) {
-    if (cursor >= bytes.length) throw new Error(t('share.errorTruncated'));
+    if (cursor >= bytes.length) throw new Error('공유 코드가 중간에 잘렸습니다. 전체를 다시 복사해 주세요.');
     const mask = bytes[cursor]!;
     cursor += 1;
     const squad: string[] = [];
     for (let slot = 0; slot < SLOTS; slot += 1) {
       if ((mask & (1 << slot)) === 0) { squad.push(''); continue; }
       if (cursor + 2 >= bytes.length) {
-        throw new Error(t('share.errorTruncated'));
+        throw new Error('공유 코드가 중간에 잘렸습니다. 전체를 다시 복사해 주세요.');
       }
       const hash = (bytes[cursor]! << 16) | (bytes[cursor + 1]! << 8) | bytes[cursor + 2]!;
       cursor += 3;
@@ -139,14 +145,14 @@ function decodeLegacy(body: string): SharePayload {
   try {
     payload = JSON.parse(new TextDecoder().decode(fromBase64Url(body)));
   } catch {
-    throw new Error(t('share.errorDecode'));
+    throw new Error('공유 코드를 해석하지 못했습니다. 코드 전체를 그대로 붙여넣었는지 확인해 주세요.');
   }
   if (typeof payload !== 'object' || payload === null) {
-    throw new Error(t('share.errorInvalid'));
+    throw new Error('공유 코드 내용이 올바르지 않습니다.');
   }
   const decks = (payload as SharePayload).decks;
   if (!Array.isArray(decks) || decks.length === 0) {
-    throw new Error(t('share.errorNoDeck'));
+    throw new Error('공유 코드에 편성 정보가 없습니다.');
   }
   return {
     fiveDeckMode: Boolean((payload as SharePayload).fiveDeckMode),
@@ -197,7 +203,7 @@ export function applyShareToDecks(
       const name = (shared.squad[slot] ?? '').trim();
       if (!name) return '';
       // 해시를 못 찾은 자리는 \u0000으로 표시해 뒀다 — 이름을 모르니 '알 수 없음'으로 센다.
-      if (name.startsWith('\u0000')) { skipped.push(t('share.unknownNikke')); return ''; }
+      if (name.startsWith('\u0000')) { skipped.push('알 수 없는 니케'); return ''; }
       if (!isKnown(name)) { skipped.push(name); return ''; }
       return name;
     });
@@ -339,7 +345,7 @@ const windowsOf = (raw: unknown, withCode: boolean): Array<PhaseWindow | Element
  */
 export function decodeBattleCode(code: string): BattleShare {
   const trimmed = code.trim();
-  if (!trimmed) throw new Error(t('battleShare.errorRequired'));
+  if (!trimmed) throw new Error('전투 조건 코드를 입력해 주세요.');
   const body = trimmed.startsWith(BATTLE_PREFIX)
     ? trimmed.slice(BATTLE_PREFIX.length) : trimmed;
 
@@ -347,10 +353,10 @@ export function decodeBattleCode(code: string): BattleShare {
   try {
     raw = JSON.parse(new TextDecoder().decode(fromBase64Url(body))) as Record<string, unknown>;
   } catch {
-    throw new Error(t('battleShare.errorDecode'));
+    throw new Error('전투 조건 코드를 해석하지 못했습니다. 코드 전체를 그대로 붙여넣었는지 확인해 주세요.');
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new Error(t('battleShare.errorInvalid'));
+    throw new Error('전투 조건 코드의 내용이 올바르지 않습니다.');
   }
 
   const d = BATTLE_DEFAULTS;
@@ -473,22 +479,22 @@ export function encodeUnionCode(share: UnionShare): string {
 /** 유니온 판 코드를 읽는다. 잘린 코드는 «어디서 끊겼는지»가 아니라 한 줄로 알린다. */
 export function decodeUnionCode(code: string): UnionShare {
   const trimmed = code.trim();
-  if (!trimmed) throw new Error(t('unionCode.errorRequired'));
+  if (!trimmed) throw new Error('유니온 판 코드를 입력해 주세요.');
   if (!trimmed.startsWith(UNION_PREFIX)) {
-    throw new Error(t('unionCode.errorPrefix'));
+    throw new Error('유니온 판 코드는 «NK4-»로 시작합니다. 조건 코드(NK3-)나 조합 코드(NK2-)는 각 칸에 따로 넣어 주세요.');
   }
 
   let bytes: Uint8Array;
   try {
     bytes = fromBase64Url(trimmed.slice(UNION_PREFIX.length));
   } catch {
-    throw new Error(t('unionCode.errorDecode'));
+    throw new Error('유니온 판 코드를 해석하지 못했습니다. 코드 전체를 그대로 붙여넣었는지 확인해 주세요.');
   }
 
   let cursor = 0;
   const need = (count: number): void => {
     if (cursor + count > bytes.length) {
-      throw new Error(t('unionCode.errorTruncated'));
+      throw new Error('유니온 판 코드가 중간에 끊겼습니다. 코드 전체를 그대로 붙여넣었는지 확인해 주세요.');
     }
   };
   const take = (count: number): Uint8Array => {

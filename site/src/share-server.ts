@@ -1,11 +1,12 @@
 import type { BattleShare } from './share-code';
-import { displayCharacterName, displayElementName, t } from './i18n';
+import { t } from './i18n';
 
 // 설정 공유 서버(`worker-share/`)와 이야기하는 쪽. 서버가 아는 것은 공유 코드 문자열과
 // 사람이 붙인 이름뿐이고, 그 코드가 무슨 뜻인지 — 몇 초짜리 전투인지, 누가 편성됐는지 —
 // 는 여기서만 안다. 목록에 함께 적히는 «설명»도 그래서 서버가 아니라 이쪽에서 만든다.
 
-export type ShareKind = 'boss' | 'squad' | 'union';
+/** `maker`는 보스 메이커로 그린 보스(NK5-)다. `boss`는 전투 조건(NK3-)이다. */
+export type ShareKind = 'boss' | 'squad' | 'union' | 'maker';
 export type VoteValue = 1 | -1 | 0;
 
 export interface ShareItem {
@@ -96,7 +97,9 @@ type Fetcher = typeof fetch;
  * 그 사이에 «없는 경로입니다»가 그대로 화면에 뜬다 — 무슨 뜻인지 알 수 없는 말이라 바꿔 준다.
  */
 const NO_ROUTE = '없는 경로입니다.';
-const notReady = (what: string) => new Error(t('server.notReady', { what }));
+/** 서버가 아직 모르는 공유 종류. 사이트가 먼저 나가고 Worker는 나중에 배포된다. */
+const NO_KIND = '알 수 없는 공유 종류입니다.';
+const notReady = (what: string) => new Error(`${what} 서버가 아직 준비되지 않았습니다. 잠시 뒤에 다시 시도해 주세요.`);
 
 /** 서버가 준 에러 문구를 그대로 살려 던진다 — 사용자에게 보여 줄 말이 거기 있다. */
 async function unwrap<T>(response: Response): Promise<T> {
@@ -108,7 +111,7 @@ async function unwrap<T>(response: Response): Promise<T> {
   }
   if (!response.ok) {
     const message = (body as { error?: string } | null)?.error;
-    throw new Error(message ?? t('server.noResponse', { status: response.status }));
+    throw new Error(message ?? `서버가 응답하지 않았습니다 (${response.status}).`);
   }
   return body as T;
 }
@@ -123,6 +126,24 @@ export class ShareServer {
     this.fetcher = fetcher ?? ((...args) => fetch(...args));
   }
 
+  /**
+   * `unwrap`에 «서버가 아직 이 종류를 모른다» 안내를 얹은 것.
+   *
+   * 종류를 새로 들이면 사이트가 먼저 나가고 Worker는 나중에 배포된다. 그 사이에
+   * 서버가 주는 말은 «알 수 없는 공유 종류입니다»인데, 읽는 사람에게는 자기가 뭘
+   * 잘못한 것처럼 들린다.
+   */
+  private async unwrapKind<T>(response: Response): Promise<T> {
+    try {
+      return await unwrap<T>(response);
+    } catch (error) {
+      if (error instanceof Error && (error.message === NO_KIND || error.message === NO_ROUTE)) {
+        throw new Error('이 종류의 공유는 서버가 아직 준비되지 않았습니다. 코드로 주고받아 주세요.');
+      }
+      throw error;
+    }
+  }
+
   /** `unwrap`에 «아직 배포 전» 안내를 얹은 것. 새로 만든 경로에만 쓴다. */
   private async unwrapReady<T>(response: Response, what: string): Promise<T> {
     try {
@@ -135,7 +156,7 @@ export class ShareServer {
 
   async list(kind: ShareKind): Promise<ShareListResult> {
     const response = await this.fetcher(`${this.base}/list?kind=${kind}`);
-    const result = await unwrap<ShareListResult>(response);
+    const result = await this.unwrapKind<ShareListResult>(response);
     return {
       items: (result.items ?? []).map((item) => ({ ...item, uses: item.uses ?? 0 })),
       mine: result.mine ?? {},
@@ -149,7 +170,7 @@ export class ShareServer {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
     });
-    return unwrap<ShareUploadResult>(response);
+    return this.unwrapKind<ShareUploadResult>(response);
   }
 
   /** 「가져다 썼다」를 알린다. 세는 것은 서버이고, IP당 한 번만 오른다. */
@@ -168,7 +189,7 @@ export class ShareServer {
    */
   async abbrevRules(): Promise<AbbrevShare[]> {
     const response = await this.fetcher(`${this.base}/abbrev`);
-    const result = await this.unwrapReady<{ rules?: AbbrevShare[] }>(response, t('server.abbrevDictionary'));
+    const result = await this.unwrapReady<{ rules?: AbbrevShare[] }>(response, '약어 사전');
     return (result.rules ?? []).filter((rule) => rule.key && rule.names?.length > 0);
   }
 
@@ -179,12 +200,12 @@ export class ShareServer {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key, names }),
     });
-    await this.unwrapReady<unknown>(response, t('server.abbrevDictionary'));
+    await this.unwrapReady<unknown>(response, '약어 사전');
   }
 
   async feedbackList(): Promise<FeedbackItem[]> {
     const response = await this.fetcher(`${this.base}/feedback`);
-    const result = await this.unwrapReady<{ items?: FeedbackItem[] }>(response, t('server.feedback'));
+    const result = await this.unwrapReady<{ items?: FeedbackItem[] }>(response, '피드백');
     return result.items ?? [];
   }
 
@@ -194,7 +215,7 @@ export class ShareServer {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
     });
-    const result = await this.unwrapReady<{ item: FeedbackItem }>(response, t('server.feedback'));
+    const result = await this.unwrapReady<{ item: FeedbackItem }>(response, '피드백');
     return result.item;
   }
 
@@ -205,7 +226,7 @@ export class ShareServer {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, status, password }),
     });
-    const result = await this.unwrapReady<{ item: FeedbackItem }>(response, t('server.feedback'));
+    const result = await this.unwrapReady<{ item: FeedbackItem }>(response, '피드백');
     return result.item;
   }
 
@@ -215,7 +236,7 @@ export class ShareServer {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, password }),
     });
-    await this.unwrapReady<unknown>(response, t('server.feedback'));
+    await this.unwrapReady<unknown>(response, '피드백');
   }
 
   async adminCheck(password: string): Promise<boolean> {
@@ -224,7 +245,7 @@ export class ShareServer {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
     });
-    await this.unwrapReady<unknown>(response, t('server.feedback'));
+    await this.unwrapReady<unknown>(response, '피드백');
     return true;
   }
 
@@ -240,20 +261,17 @@ export class ShareServer {
 
 /** 목록에서 «어떤 상황에서 쟀나»가 한 줄로 읽히게. 설정에서만 만든다. */
 export function summarizeBattle(battle: BattleShare): string {
-  const parts = [t('time.seconds', { count: battle.duration })];
-  parts.push(battle.enemyCode
-    ? t('battleSummary.enemy', { code: displayElementName(battle.enemyCode) })
-    : t('battleSummary.noElement'));
-  parts.push(battle.coreEnabled
-    ? t('battleSummary.core', { px: battle.corePx })
-    : t('battleSummary.noCore'));
-  if (battle.hasParts) parts.push(t('battleSummary.parts'));
+  // 값과 낱말이 섞인 한 줄이라 DOM 훑기로는 못 바꾼다 — 조각마다 사전을 지난다.
+  const parts = [t('{n}초', { n: battle.duration })];
+  parts.push(battle.enemyCode ? t('적 {code}', { code: t(battle.enemyCode) }) : t('무속성'));
+  parts.push(battle.coreEnabled ? t('코어 {n}px', { n: battle.corePx }) : t('코어 없음'));
+  if (battle.hasParts) parts.push(t('파츠'));
   if (battle.optimalRangeWeapons.length > 0) {
-    parts.push(t('battleSummary.range', { weapons: battle.optimalRangeWeapons.join('·') }));
+    parts.push(t('적정 {list}', { list: battle.optimalRangeWeapons.join('·') }));
   }
-  if (battle.immuneWindows.length > 0) parts.push(t('battleSummary.immune', { count: battle.immuneWindows.length }));
-  if (battle.elementWindows.length > 0) parts.push(t('battleSummary.element', { count: battle.elementWindows.length }));
-  parts.push(t(battle.rngMode === 'expected' ? 'battleSummary.expected' : 'battleSummary.random'));
+  if (battle.immuneWindows.length > 0) parts.push(t('족자 {n}', { n: battle.immuneWindows.length }));
+  if (battle.elementWindows.length > 0) parts.push(t('속저 {n}', { n: battle.elementWindows.length }));
+  parts.push(battle.rngMode === 'expected' ? t('기대값') : t('난수'));
   return parts.join(' · ');
 }
 
@@ -268,12 +286,11 @@ export function summarizeSquad(
   fiveDeckMode: boolean,
 ): string {
   const filled = decks.map((deck) => deck.squad.filter((name) => name.trim() !== ''));
-  const names = (squad: string[]) => squad.map((name) => displayCharacterName(name)).join('/');
-  if (!fiveDeckMode) return names(filled[0] ?? []);
+  if (!fiveDeckMode) return filled[0]?.join('/') ?? '';
   const used = filled.filter((squad) => squad.length > 0);
   const total = used.reduce((sum, squad) => sum + squad.length, 0);
-  if (used.length <= 1) return names(used[0] ?? []);
-  return t('share.squadSummary', { decks: used.length, people: total });
+  if (used.length <= 1) return used[0]?.join('/') ?? '';
+  return `${used.length}덱 · ${total}명`;
 }
 
 /**
@@ -285,9 +302,9 @@ export function summarizeUnion(
 ): string {
   const live = bosses.filter((boss) => boss.enabled
     && (boss.name.trim() !== '' || boss.battleCode.trim() !== ''));
-  const names = live.map((boss, index) => boss.name.trim() || t('union.boss', { index: index + 1 }));
+  const names = live.map((boss, index) => boss.name.trim() || `보스 ${index + 1}`);
   const decks = live.reduce(
     (sum, boss) => sum + boss.deckCodes.filter((code) => code.trim() !== '').length, 0);
-  if (names.length === 0) return t('union.emptyBoard');
-  return t('union.boardSummary', { names: names.join(' / '), decks });
+  if (names.length === 0) return '빈 판';
+  return `${names.join(' / ')} · 덱 ${decks}개`;
 }

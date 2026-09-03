@@ -1,12 +1,9 @@
-// @vitest-environment jsdom
-
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import { STAT_NAMES, statName, statText } from './stat-names';
-import { setLocale } from './i18n';
 
 describe('효과 이름', () => {
   it('스킬 데이터에 쓰이는 효과 키를 모두 한글로 갖고 있다', () => {
@@ -41,13 +38,5 @@ describe('효과 이름', () => {
 
   it('내려가는 값은 부호를 그대로 둔다', () => {
     expect(statText('def_pct', -12.5)).toBe('방어력 증가 -12.5%');
-  });
-
-  it('zh-TW에서는 표시 이름과 시간 단위를 현지화하고 엔진 키는 보존한다', () => {
-    setLocale('zh-TW');
-    expect(statText('atk_dmg_pct', 20.99)).toBe('造成傷害增加 +20.99%');
-    expect(statText('burst_cooldown_reduce', 5.34)).toBe('爆裂技能冷卻時間減少 +5.34秒');
-    expect(statName('made_up_stat')).toBe('made_up_stat');
-    setLocale('ko');
   });
 });

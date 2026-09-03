@@ -21,6 +21,7 @@ from typing import Any
 
 from .base_stat import calc_base_stats
 from .buff_manager import BuffManager, _QUANT_PARTS_KEY, _get_skill_lv
+from .cheats import from_config as cheats_from_config
 from .damage import calc_damage, default_hit_type, is_element_match
 from .sim_result import (
     HitEvent,
@@ -164,6 +165,9 @@ DEFAULT_ENEMY: dict = {
     #                     e.g. {"from":100,"to":102,"code":"풍압"} → 작열 캐릭터만
     "immune_windows":       [],
     "element_windows":      [],
+    # 관통 사격이 꿰뚫는 몸통·파츠 수(보스 메이커가 그림에서 세어 넘긴다).
+    # 기본은 몸통 하나 — 한 발이 한 히트로 끝나 지금까지와 같다.
+    "pierce_pass":          {"shapes": 1, "parts": 0},
 }
 
 
@@ -194,6 +198,18 @@ def _core_hit_prob(weapon_type: str, accuracy_pct: float, core_px: float) -> flo
     R = D / 2.0
     r_c = core_px / 2.0
     return min(1.0, (r_c / R) ** _MODEL_N)
+
+
+def _pierce_passthrough(enemy: dict) -> tuple[int, int]:
+    """관통 사격이 꿰뚫는 **몸통 수와 파츠 수**. 기본은 몸통 하나 — 지금까지와 같다.
+
+    보스 메이커가 «겨냥한 자리에 겹친 도형·파츠»를 세어 넘긴다(`enemy["pierce_pass"]`).
+    안 넘기면 `(1, 0)`이라 한 발이 한 히트로 끝나므로 기존 계산은 한 자리도 안 바뀐다.
+    """
+    spec = enemy.get("pierce_pass") or {}
+    shapes = max(1, int(spec.get("shapes", 1) or 1))
+    parts = max(0, int(spec.get("parts", 0) or 0))
+    return shapes, parts
 
 
 def _apply_hit_coeff(damage, cfg: dict, weapon_type: str, is_skill_shot: bool):
@@ -630,6 +646,11 @@ class CharState:
 
         if not infinite_ammo:
             self.ammo -= 1
+        # 핵의 무한 장탄은 «탄창이 안 비는 것»이다 — 소비는 그대로 일어나 「탄 소비 시」
+        # 효과가 계속 터지고, 빈 자리가 그 자리에서 차서 재장전만 사라진다.
+        # (탄창이 안 비니 「마지막 탄」 효과는 당연히 안 나온다 — 화면에도 그렇게 적었다)
+        if bm.cheats.infinite_ammo:
+            self.ammo = self._full_ammo(bm, t)
         if self._sim_log is not None:
             self._sim_log.ammo_log.append(AmmoLogEntry(t=t, caster=self.name, ammo=self.ammo))
         if not infinite_ammo:
@@ -704,6 +725,10 @@ class CharState:
                                    is_crit=res["is_crit"], hit_tag=tag,
                                    **({"skill_name": self._wc_name}
                                       if self._wc_is_skill_damage() else {})))
+            events.extend(self._pierce_extra(
+                ht=ht, base_damage=shot_damage, is_crit=res["is_crit"], buffs=buffs,
+                enemy=enemy, cfg=cfg, expected=expected, t=t, tag=tag,
+            ))
             bm.notify("pellet_hit", t, self.name)
             body_ev = "squad_part_hit" if enemy.get("has_parts", False) else "squad_body_hit"
             core_frac = P_core if expected else (1.0 if is_core else 0.0)
@@ -724,6 +749,45 @@ class CharState:
             bm.notify("last_bullet", t, self.name)
 
         return events
+
+    def _pierce_extra(
+        self, *, ht: dict, base_damage: int, is_crit: bool, buffs: dict, enemy: dict,
+        cfg: dict, expected: bool, t: float, tag: str,
+    ) -> list[HitEvent]:
+        """관통이 꿰뚫고 지나간 **나머지 대상** 몫.
+
+        한 발이 몸통 1 + 파츠 2를 지나면 히트가 셋이다. 파츠에 든 히트는 파츠 판정을
+        받아 `part_dmg_pct`(파츠 대미지 ▲)가 실린다 — 그래서 대미지를 다시 계산한다.
+        몸통을 여러 장 지나는 몫은 판정이 같으므로 값을 그대로 복제한다.
+
+        **트리거는 늘리지 않는다.** 대미지만 더한다 — 히트 수를 세는 스킬까지 함께
+        늘리면 파츠 하나 겹쳐 놓은 것만으로 스택이 두 배로 도는 일이 생긴다.
+        """
+        if not ht.get("is_pierce_damage"):
+            return []
+        shapes, parts = _pierce_passthrough(enemy)
+        if shapes <= 1 and parts <= 0:
+            return []
+
+        extra: list[HitEvent] = []
+        named = {"skill_name": self._wc_name} if self._wc_is_skill_damage() else {}
+        for _ in range(shapes - 1):
+            extra.append(HitEvent(t=t, caster=self.name, damage=base_damage,
+                                  is_crit=is_crit, hit_tag=f"pierce:{tag}", **named))
+        # 파츠 판정은 파츠를 가진 보스에서만 성립한다.
+        if parts > 0 and enemy.get("has_parts", False):
+            part_ht = dict(ht, is_part=True)
+            part_res = calc_damage(
+                base_atk=self.base_atk, buffs=buffs, weapon=self.weapon,
+                hit_type=part_ht, enemy_def=enemy.get("def", 31784), expected=expected,
+            )
+            part_damage = _apply_hit_coeff(part_res["damage"], cfg, self.weapon_type,
+                                           self._wc_is_skill_damage())
+            for _ in range(parts):
+                extra.append(HitEvent(t=t, caster=self.name, damage=part_damage,
+                                      is_crit=part_res["is_crit"],
+                                      hit_tag="pierce:part", **named))
+        return extra
 
     # ── charge (SR/RL) ────────────────────────────────────────────────────
 
@@ -872,8 +936,18 @@ class CharState:
         else:
             P_core = 0.0
         expected = cfg.get("rng_mode") == "expected"
-        # P_core가 1이면 판정할 게 없으므로 기대값 모드에서도 코어 히트로 남긴다
-        is_core = (P_core >= 1.0) if expected else (random.random() < P_core)
+
+        # 펠릿 분할. 지금까지 차지 무기는 전부 SR·RL(펠릿 1)이라 나눌 일이 없었지만,
+        # **차지 샷건**이 나왔다 — 드레이크 : 그레이트 빌런의 「오버 오버 드라이브」는
+        # 샷건인 채로 차지하고 펠릿이 15개다. 자동 사격 쪽과 같은 규칙으로 나눈다:
+        # `damage_coeff`를 펠릿 수로 쪼개고 코어 판정을 펠릿마다 따로 한다.
+        # 펠릿 1이면 `split == 1`이라 `coeff=None`으로 떨어져 예전 경로 그대로다.
+        pellet_fixed = buffs.get("pellet_count_fixed", 0.0)
+        if pellet_fixed > 0:
+            split = max(1, int(round(pellet_fixed)))
+        else:
+            split = max(1, self.pellets + int(round(buffs.get("pellet_count", 0.0))))
+        hit_count = split * self.muzzles
 
         debug_char = cfg.get("_debug_char")
         in_debug_window = (
@@ -882,39 +956,48 @@ class CharState:
         )
 
         is_full_burst = bm.state.get("full_burst", False)
-        ht = default_hit_type(
-            is_core=is_core,
-            core_prob=(P_core if expected else None),
-            is_full_burst=is_full_burst,
-            is_optimal_range=is_optimal,
-            is_normal_atk=not self._wc_is_skill_damage(),
-            is_weapon_mode_skill=self._wc_is_skill_damage(),
-            is_full_charge=is_full,
-            is_pierce_damage=bool(buffs.get("pierce_enabled")),
-            is_armor_break_damage=bool(buffs.get("armor_break_enabled")),
-            is_projectile_explosion=(self.base_weapon_type == "RL"),
-            _debug_factors=in_debug_window,
-        )
         if in_debug_window:
             print(f"t={t:.3f}s  base_atk={self.base_atk:,}  enemy_def={enemy.get('def', 31784):,}")
-        res = calc_damage(
-            base_atk=self.base_atk, buffs=buffs, weapon=self.weapon,
-            hit_type=ht, enemy_def=enemy.get("def", 31784),
-            expected=expected,
-        )
+        for _ in range(hit_count):
+            # 코어는 펠릿마다 따로 굴린다 (P_core가 1이면 기대값 모드에서도 코어로 남긴다).
+            is_core = (P_core >= 1.0) if expected else (random.random() < P_core)
+            ht = default_hit_type(
+                is_core=is_core,
+                core_prob=(P_core if expected else None),
+                is_full_burst=is_full_burst,
+                is_optimal_range=is_optimal,
+                is_normal_atk=not self._wc_is_skill_damage(),
+                is_weapon_mode_skill=self._wc_is_skill_damage(),
+                is_full_charge=is_full,
+                is_pierce_damage=bool(buffs.get("pierce_enabled")),
+                is_armor_break_damage=bool(buffs.get("armor_break_enabled")),
+                is_projectile_explosion=(self.base_weapon_type == "RL"),
+                # 표기 대미지는 **한 발** 값이라 펠릿 수로 나눠 태운다(자동 사격과 같다).
+                coeff=(self.weapon["damage_coeff"] / split) if split > 1 else None,
+                _debug_factors=in_debug_window,
+            )
+            res = calc_damage(
+                base_atk=self.base_atk, buffs=buffs, weapon=self.weapon,
+                hit_type=ht, enemy_def=enemy.get("def", 31784),
+                expected=expected,
+            )
+            if is_full:
+                tag = "core+full_charge_hit" if is_core else "full_charge_hit"
+            else:
+                # 논차지 샷은 일반 발사와 같은 취급 (차지 배율 없음)
+                tag = "core" if is_core else "normal"
+            shot_damage = _apply_hit_coeff(res["damage"], cfg, self.weapon_type,
+                                           self._wc_is_skill_damage())
+            events.append(HitEvent(t=t, caster=self.name, damage=shot_damage,
+                                   is_crit=res["is_crit"], hit_tag=tag,
+                                   **({"skill_name": self._wc_name}
+                                      if self._wc_is_skill_damage() else {})))
         if in_debug_window:
             print()
-        if is_full:
-            tag = "core+full_charge_hit" if is_core else "full_charge_hit"
-        else:
-            # 논차지 샷은 일반 발사와 같은 취급 (차지 배율 없음)
-            tag = "core" if is_core else "normal"
-        shot_damage = _apply_hit_coeff(res["damage"], cfg, self.weapon_type,
-                                       self._wc_is_skill_damage())
-        events.append(HitEvent(t=t, caster=self.name, damage=shot_damage,
-                               is_crit=res["is_crit"], hit_tag=tag,
-                               **({"skill_name": self._wc_name}
-                                  if self._wc_is_skill_damage() else {})))
+        events.extend(self._pierce_extra(
+            ht=ht, base_damage=shot_damage, is_crit=res["is_crit"], buffs=buffs,
+            enemy=enemy, cfg=cfg, expected=expected, t=t, tag=tag,
+        ))
         # 명중 직후 파생되는 "자신이 가한 피해량 비례 고정 대미지"의 기준값.
         # notify(full_charge_hit) 동안만 소비되며 방어력·공격 버프를 다시 적용하지 않는다.
         bm.state.setdefault("last_normal_hit_damage", {})[self.name] = res["damage"]
@@ -924,6 +1007,9 @@ class CharState:
             # _tick_charge()는 _fire()를 거치지 않고 자체 발사 처리를 하므로 여기에도 필요하다.
             self._wc_shots += 1
         self.ammo -= 1
+        # 차지 무기도 마찬가지로 탄창이 안 빈다(`_fire`와 같은 취지).
+        if bm.cheats.infinite_ammo:
+            self.ammo = self._full_ammo(bm, t)
         if self._sim_log is not None:
             self._sim_log.ammo_log.append(AmmoLogEntry(t=t, caster=self.name, ammo=self.ammo))
         bm.notify("squad_ammo_consume", t, self.name)
@@ -1044,7 +1130,6 @@ class CharState:
         wc_full_charge_mult = wc_eff.get("full_charge_mult", 100.0)
         wc_reload_time = wc_eff.get("reload_time", self.weapon.get("reload_time", 1.5))
         wc_core_dmg_mult = wc_eff.get("core_dmg_mult", self.weapon.get("core_dmg_mult", 200.0))
-        wc_post_fire_delay = wc_eff.get("post_fire_delay", wc_mech.get("post_fire_delay", 0.0))
 
         # 변경 무기의 발사 메카닉. CDN에 변경 무기 레코드가 없어 캐릭터별 계층이 비므로
         # 수동 실측(weapon_delays `_weapon_change`) → 스킬 텍스트에 명시된 값(wc_eff)
@@ -1056,6 +1141,10 @@ class CharState:
         wc_warmup_bullets = float(_pick("warmup_bullets", wc_over, wc_eff, wc_mech, default=1.0))
         wc_pellets = int(_pick("pellets", wc_over, wc_eff, wc_mech, default=1))
         wc_muzzles = int(_pick("muzzles", wc_over, wc_eff, default=1))
+        # 발사 후 딜레이도 실측 계층(`weapon_delays._weapon_change`)이 먼저다 —
+        # 이 파일이 애초에 딜레이 실측을 모아 두는 곳인데 여기만 안 닿고 있었다.
+        wc_post_fire_delay = _pick("post_fire_delay", wc_over, wc_eff,
+                                   default=wc_mech.get("post_fire_delay", 0.0))
 
         # 임시 무기 dict 구성 (calc_damage가 weapon["full_charge_mult"] 등을 참조)
         wc_weapon_dict = {
@@ -1111,9 +1200,14 @@ class CharState:
             wc_ammo_full = wc_max_ammo
 
         if wc_fire_mode == "charge":
-            if was_ready:
+            # 세션에 새로 들어왔으면 **차지 상태와 무관하게** 모드의 탄창을 채운다.
+            # `was_ready`만 보면 두 번째 진입부터 탄창이 안 실린다 — 모드가 duration으로
+            # 끝날 때 `_charge_phase`가 "ready"로 되돌지 않아(그 초기화는 duration_bullets
+            # 종료 경로에만 있다) 이후 진입이 전부 «차지 중»으로 읽히기 때문이다.
+            # 나유타 `기억 연소`(무한 장탄 모드)가 첫 버스트에만 무한이던 원인이다.
+            if was_ready or self._wc_new_session:
                 self.ammo = wc_ammo_full
-            elif self._wc_new_session:
+            if self._wc_new_session and not was_ready:
                 # 이전 무기의 차지가 진행 중인 채로 모드에 진입했다면 차지를 새로 시작한다.
                 # 무기가 통째로 바뀌므로 앞 무기에 쌓인 차지 진행분을 물려받을 근거가 없다.
                 #
@@ -1656,6 +1750,8 @@ class BurstController:
         enemy: dict,
     ):
         self.config = config
+        # 켜 둔 핵. 게이지 충전은 표(buffs)가 아니라 **시간**의 문제라 여기서 직접 읽는다.
+        self.cheats = cheats_from_config(config)
         # 족자 중에는 평타가 빗나가니 버스트 게이지도 안 찬다 — 옵션이다.
         # 기본은 켬이며, 옵션을 끄면 족자 중에도 충전이 이어진다.
         self._gauge_blocked = (
@@ -1710,7 +1806,8 @@ class BurstController:
         self._cd_applied_at_cast: dict[str, float] = {n: 0.0 for n in self.squad_names}
 
         # 버스트 게이지 충전 완료 시각 — 첫 버스트는 burst_regen_time 무시, first_burst_time에 발동
-        _first_burst_t = config.get("first_burst_time", 3.0)
+        # 핵을 켜면 첫 게이지도 이미 차 있다 — 충전 시간이 0이라는 말이 그 뜻이다.
+        _first_burst_t = 0.0 if self.cheats.burst_charge else config.get("first_burst_time", 3.0)
         self.gauge_full_at: dict[str, float] = {
             c["name"]: _first_burst_t for c in squad
         }
@@ -1773,6 +1870,10 @@ class BurstController:
             if self._log is not None:
                 self._log.burst_log.append(BurstLogEntry(t=t, event="full_burst 종료", caster=""))
             for name in self.squad_names:
+                if self.cheats.burst_charge:
+                    # 충전 시간 0. 족자로 멈추고 말고 할 것도 없이 그 자리에서 다 찬다.
+                    self.gauge_full_at[name] = t
+                    continue
                 regen = self.char_states[name].char.get("burst_regen_time", 2.0)
                 self.gauge_full_at[name] = charge_end(t, regen, self._gauge_blocked)
             self._burst_count += 1
@@ -2098,6 +2199,10 @@ class BurstController:
         cd_buff = buffs.get("burst_cooldown", 0.0)
         self._cd_applied_at_cast[name] = cd_buff
         cd = max(0.0, cd - cd_buff)
+        # 핵: 충전이 없다는 말은 게이지뿐 아니라 **버스트 쿨도 없다**는 뜻이다.
+        # 게이지만 0으로 두면 쿨이 그대로라 사이클 수가 그대로다 — 그건 핵이 아니다.
+        if self.cheats.burst_charge:
+            cd = 0.0
         self.burst_ready_at[name] = t + cd
 
         bm.notify("burst_cast", t, name)
@@ -2373,6 +2478,8 @@ def simulate(
     }
 
     bm = BuffManager(squad, state)
+    # 핵(`calculator/cheats.py`). 켜져 있으면 get_buffs가 내는 표마다 얹힌다.
+    bm.cheats = cheats_from_config(cfg)
     burst_ctrl = BurstController(squad, cfg, char_states, enm)
     _register_instant_handlers(bm, char_states, burst_ctrl)
 

@@ -7,19 +7,17 @@ import type {
   OverloadLines,
   SettingsCatalog,
 } from './types';
-import { t } from './i18n';
 
 export const BLABLA_SERVERS = [
-  { area: 83, get label() { return t('blabla.serverKorea'); } },
-  { area: 81, get label() { return t('blabla.serverJapan'); } },
-  { area: 84, get label() { return t('blabla.serverGlobal'); } },
-  { area: 82, get label() { return t('blabla.serverNorthAmerica'); } },
-  { area: 85, get label() { return t('blabla.serverSoutheastAsia'); } },
+  { area: 83, label: '한국' },
+  { area: 81, label: '일본' },
+  { area: 84, label: '글로벌' },
+  { area: 82, label: '북미' },
+  { area: 85, label: '동남아' },
 ] as const;
 
 export function blablaServerLabel(area: number): string {
-  const server = BLABLA_SERVERS.find((candidate) => candidate.area === area);
-  return server?.label ?? t('blabla.serverUnknown', { area });
+  return BLABLA_SERVERS.find((server) => server.area === area)?.label ?? `서버 ${area}`;
 }
 
 // 블라블라링크 프로필 응답 → 캐릭터별 override.
@@ -294,13 +292,13 @@ export function areaToOverrides(
   }
 
   if (unknownCollection > 0) {
-    notes.push(t('blabla.unknownCollection', { count: unknownCollection }));
+    notes.push(`소장품을 알아보지 못한 니케 ${unknownCollection}종 — 그 니케만 기본 소장품으로 계산합니다.`);
   }
   if (noCube > 0) {
-    notes.push(t('blabla.noCube', { count: noCube }));
+    notes.push(`큐브를 끼지 않은 니케 ${noCube}종 — 그 니케만 기본 큐브로 계산합니다.`);
   }
   if (unmatched.length > 0) {
-    notes.push(t('blabla.unsupported', { count: unmatched.length }));
+    notes.push(`계산기가 아직 다루지 않는 니케 ${unmatched.length}종은 건너뛰었습니다.`);
   }
 
   return { overrides, matched, unmatched, notes };

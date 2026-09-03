@@ -7,7 +7,6 @@ import {
   renderCharacterSettings, withParticle,
 } from './character-settings';
 import type { BuffTargetRow, CharacterOverrides, SettingsCatalog } from './types';
-import { setLocale } from './i18n';
 
 const settings: SettingsCatalog = {
   characters: {
@@ -118,7 +117,6 @@ const settings: SettingsCatalog = {
   cubes: {
     재장: { id: 0, label: '재장', stat: 'reload_speed_pct', template: '재장전 속도 {0} ▲%', levels: { '15': { atk: 2780, def: 552, hp: 83400, effect: 29.69, commonElement: 19.09 } } },
     탄충: { id: 0, label: '탄충', stat: 'ammo_charge_flat', template: '10발 사격 시 탄환 충전 {0}발 ▲', levels: { '15': { atk: 2780, def: 552, hp: 83400, effect: 3, commonElement: 19.09 } } },
-    '렐릭 베어 큐브': { id: 1000303, label: '렐릭 베어 큐브', stat: 'reload_speed_pct', template: '재장전 속도 {0} ▲%', levels: { '15': { atk: 2780, def: 552, hp: 83400, effect: 29.69, commonElement: 19.09 } } },
     체력: { id: 0, label: '체력', stat: 'max_hp_pct', template: '최대 체력 {0} ▲%', levels: { '15': { atk: 2780, def: 552, hp: 83400, effect: 9.69, commonElement: 19.09 } } },
     차속: { id: 0, label: '차속', stat: 'charge_speed_pct', template: '차지 속도 {0} ▲%', levels: { '15': { atk: 2780, def: 552, hp: 83400, effect: 2.12, commonElement: 19.09 } } },
     파츠: { id: 0, label: '파츠', stat: 'part_dmg_pct', template: '파츠 대미지 {0} ▲%', levels: { '15': { atk: 2780, def: 552, hp: 83400, effect: 31.9, commonElement: 19.09 } } },
@@ -158,7 +156,6 @@ describe('character settings editor', () => {
   };
 
   beforeEach(() => {
-    setLocale('ko');
     root = document.createElement('div');
     document.body.append(root);
     value = undefined;
@@ -182,18 +179,6 @@ describe('character settings editor', () => {
     expect(value?.growthStage).toBe(3);
     expect(value?.overload).toEqual(settings.characters.리타!.overload);
     expect(root.querySelector<HTMLInputElement>('[data-overload-key="atk_pct"]')?.value).toBe('22.22');
-  });
-
-  it('zh-TW에서는 설정 요약과 편집 라벨을 현지화하고 저장 키는 유지한다', () => {
-    setLocale('zh-TW');
-    render();
-    expect(root.textContent).toContain('預設值');
-    expect(root.textContent).toContain('好感度 30');
-    setToggle('[data-custom-toggle]', true);
-    expect(root.querySelector('[data-char-panel-open="settings"]')?.textContent).toContain('數值設定');
-    expect(root.querySelector<HTMLSelectElement>('[data-equip-level="머리"]')?.options[0]?.text)
-      .toBe('未裝備');
-    expect(value?.cube?.name).toBe('재장');
   });
 
   it('assigns priority-every-n burst usage and reveals the n input', () => {
@@ -356,23 +341,6 @@ describe('character settings editor', () => {
 
     expect(root.querySelectorAll('[data-overload-key]')).toHaveLength(9);
     expect(root.textContent).toContain('차지형 무기가 아니면 차지 옵션은 효과가 없습니다.');
-  });
-
-  it('shows official zh-TW cube and favorite-item names, not the cube effect stat', () => {
-    setLocale('zh-TW');
-    characterName = '라피';
-    value = { cube: { name: '렐릭 베어 큐브', level: 15 } };
-    render();
-
-    const cube = root.querySelector<HTMLSelectElement>('[data-cube-name]')!;
-    expect(cube.value).toBe('렐릭 베어 큐브');
-    expect([...cube.options].find((option) => option.value === '렐릭 베어 큐브')?.textContent)
-      .toBe('遺跡巨熊魔方');
-    expect([...cube.options].find((option) => option.value === '렐릭 베어 큐브')?.textContent)
-      .not.toBe('換彈速度');
-    expect(root.querySelector('.collection-editor .field-note')!.textContent)
-      .toContain('紀念鑰匙圈');
-    expect(value.cube?.name).toBe('렐릭 베어 큐브');
   });
 
   it('offers only collection stages when the character has no favorite item', () => {

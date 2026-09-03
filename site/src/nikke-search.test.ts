@@ -29,6 +29,8 @@ const CHARS = [
   meta('라플라스'),
   meta('라피'),
   meta('목단', { weaponType: 'SR' }),
+  meta('리타'),
+  meta('리버렐리오'),
 ];
 
 const pick = (query: string): string[] =>
@@ -51,6 +53,14 @@ describe('squash', () => {
   it('공백과 구분자를 지운다', () => {
     expect(squash('라피 : 레드 후드')).toBe('라피레드후드');
     expect(squash('2B')).toBe('2b');
+  });
+
+  it('자판이 붙여 버린 겹자음을 두 글자로 되돌린다', () => {
+    // ㄹ·ㅌ을 이어 치면 자판은 겹받침 ㄾ 한 글자를 내놓는다.
+    expect(squash('ㄾ')).toBe('ㄹㅌ');
+    expect(squash('ㄿ')).toBe('ㄹㅍ');
+    expect(squash('ㄼㄹㄹㅇ')).toBe('ㄹㅂㄹㄹㅇ');
+    expect(squash('ㅄ')).toBe('ㅂㅅ');
   });
 });
 
@@ -99,6 +109,15 @@ describe('filterByQuery', () => {
   it('걸리는 게 없으면 빈 목록', () => {
     expect(pick('없는이름')).toEqual([]);
   });
+
+  it('겹받침으로 붙어 버린 초성도 친 대로 찾는다', () => {
+    // 「리타」를 찾으려 ㄹ·ㅌ을 치면 입력창에는 ㄾ 한 글자가 들어온다.
+    expect(pick('ㄾ')[0]).toBe('리타');
+    expect(pick('ㄿ')[0]).toBe('라피');
+    expect(pick('ㄼㄹㄹㅇ')).toEqual(['리버렐리오']);
+    // 뒤에 한 자 더 치면 자판은 겹받침을 놓고 새 글자를 잡는다.
+    expect(pick('ㄾ')).toEqual(pick('ㄹㅌ'));
+  });
 });
 
 describe('별칭 검색', () => {
@@ -122,22 +141,5 @@ describe('별칭 검색', () => {
 
   it('별칭이 없는 캐릭터는 종전 그대로다', () => {
     expect(rankOf('세이렌', buildIndex(meta('크라운')))).toBe(NO_MATCH);
-  });
-});
-
-describe('localized display-name search', () => {
-  it('finds a Korean-keyed character by its optional Chinese display name', () => {
-    const rapi = meta('라피 : 레드 후드');
-    const index = buildIndex(rapi, '拉毗：小紅帽');
-
-    expect(rankOf('小紅帽', index)).toBe(2);
-    expect(filterByQuery([rapi], '拉毗', () => index).map((char) => char.name))
-      .toEqual(['라피 : 레드 후드']);
-  });
-
-  it('continues to search the canonical Korean name when a display name is supplied', () => {
-    const rapi = buildIndex(meta('라피'), '拉毗');
-    expect(rankOf('라피', rapi)).toBe(0);
-    expect(rankOf('拉毗', rapi)).toBe(0);
   });
 });

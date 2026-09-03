@@ -7,17 +7,11 @@
  */
 
 import type { FeedbackItem, FeedbackKind, FeedbackStatus } from './share-server';
-import { t } from './i18n';
 
 export const FEEDBACK_KINDS: FeedbackKind[] = ['bug', 'idea', 'etc'];
 export const FEEDBACK_KIND_LABEL: Record<FeedbackKind, string> = {
   bug: '버그', idea: '건의', etc: '기타',
 };
-
-const FEEDBACK_KIND_KEYS = {
-  bug: 'feedback.bug', idea: 'feedback.idea', etc: 'feedback.etc',
-} as const satisfies Record<FeedbackKind, Parameters<typeof t>[0]>;
-const feedbackKindLabel = (kind: FeedbackKind): string => t(FEEDBACK_KIND_KEYS[kind]);
 
 /**
  * 접수 → 진행중 → 완료 / 불가능.
@@ -56,17 +50,17 @@ export function doingPrompt(items: FeedbackItem[], at = new Date()): string {
   const doing = sortFeedback(items.filter((item) => item.status === 'doing'));
   const stamp = feedbackDate(at.toISOString());
   const head = [
-    t('feedback.promptTitle', { count: doing.length, date: stamp }),
+    `# 니케 계산기 — 진행중 피드백 ${doing.length}건 (${stamp})`,
     '',
-    t('feedback.promptIntro'),
-    t('feedback.promptAction'),
+    '아래는 이용자들이 올린 피드백 가운데 관리자가 「진행중」으로 옮긴 것들이다.',
+    '항목마다 무엇을 고치거나 만들어야 하는지 판단해 반영하고, 애매하면 무엇이 애매한지 적어라.',
   ];
   if (doing.length === 0) {
-    return [...head, '', t('feedback.promptEmpty'), ''].join('\n');
+    return [...head, '', '(진행중으로 옮긴 항목이 없다.)', ''].join('\n');
   }
   const body = doing.map((item, index) => [
     '',
-    `## ${index + 1}. [${feedbackKindLabel(item.kind)}] ${feedbackDate(item.at)}`
+    `## ${index + 1}. [${FEEDBACK_KIND_LABEL[item.kind] ?? '기타'}] ${feedbackDate(item.at)}`
       + `${item.by ? ` · ${item.by}` : ''}`,
     '',
     item.text,
@@ -77,7 +71,7 @@ export function doingPrompt(items: FeedbackItem[], at = new Date()): string {
 export const feedbackFileName = (at = new Date()): string => {
   const stamp = [at.getFullYear(), at.getMonth() + 1, at.getDate()]
     .map((part, index) => (index === 0 ? String(part) : String(part).padStart(2, '0'))).join('');
-  return t('feedback.fileName', { stamp });
+  return `니케계산기_진행중_${stamp}.txt`;
 };
 
 export const textBlob = (text: string): Blob =>
