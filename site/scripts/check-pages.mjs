@@ -52,6 +52,19 @@ for (const command of [
 
 const uses = buildSteps.map((step) => step.uses).filter(Boolean);
 assert.ok(uses.some((value) => value.startsWith('actions/configure-pages@')), 'configure-pages action is required');
+const configure = buildSteps.find((step) => step.uses?.startsWith('actions/configure-pages@'));
+assert.equal(configure?.id, 'pages', 'configure-pages outputs must be available to the build');
+assert.equal(
+  configure?.with?.enablement,
+  undefined,
+  'the workflow token cannot enable Pages; select GitHub Actions in repository settings first',
+);
+const configureIndex = buildSteps.indexOf(configure);
+const buildIndex = buildSteps.findIndex((step) => step.run === 'npm run build');
+assert.ok(configureIndex < buildIndex, 'Pages must be configured before the production build');
+const productionBuild = buildSteps[buildIndex];
+assert.equal(productionBuild.env?.BASE_PATH, '${{ steps.pages.outputs.base_path }}');
+assert.equal(productionBuild.env?.VITE_SITE_URL, '${{ steps.pages.outputs.base_url }}');
 const upload = buildSteps.find((step) => step.uses?.startsWith('actions/upload-pages-artifact@'));
 assert.ok(upload, 'upload-pages-artifact action is required');
 assert.equal(upload.with?.path, 'site/dist', 'Pages artifact must use site/dist');
