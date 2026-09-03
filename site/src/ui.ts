@@ -67,6 +67,7 @@ import {
   type AbbrevParse, type AbbrevRule,
 } from './squad-abbrev';
 import { createTimelineBlock } from './timeline';
+import { displayCharacterName, getLocale } from './i18n';
 import {
   aggregateDeckResults,
   cacheKey,
@@ -239,7 +240,7 @@ function renderCharacterRows(
     const head = document.createElement('p');
     head.className = 'result-row-name';
     head.append(
-      createText('b', name),
+      createText('b', displayCharacterName(name)),
       createText('span', `${share.toFixed(1)}% · ${fmt.dps(value / entry.result.duration)}`),
     );
     const track = document.createElement('div');
@@ -295,7 +296,7 @@ function renderCharacterCards(
     if (rank) portrait.append(createText('b', `${rank}위`, 'result-rank-badge'));
     card.append(portrait);
 
-    card.append(createText('h3', name));
+    card.append(createText('h3', displayCharacterName(name)));
     card.append(createText('span', `${share.toFixed(1)}% 기여`, 'result-card-share'));
     card.append(createText('strong', fmt.dmg(value)));
     card.append(createText('small', fmt.dps(value / entry.result.duration)));
@@ -375,6 +376,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   let unionHandle: UnionHandle | null = null;
   const cache = new ResultCache(storage, version, 30);
   const catalogByName = new Map(catalog.map((char) => [char.name, char]));
+  const dname = (name: string) => displayCharacterName(name);
   const decks = Array.from({ length: 5 }, (_, index) => emptyDeck(index + 1));
   decks[0]!.squad = initialSquad(catalog);
   let activeDeckId = 1;
@@ -1421,7 +1423,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       if (shared.length > 0) {
         deckNote.replaceChildren(
           createText('b', `여러 덱에 겹친 니케 ${shared.length}명: `),
-          createText('span', shared.map(([name, ids]) => `${name}(덱 ${ids.join('·')})`).join(', ')),
+          createText('span', shared.map(([name, ids]) => `${dname(name)}(덱 ${ids.join('·')})`).join(', ')),
           createText('em', ' — 견주려고 일부러 겹쳤다면 그대로 두셔도 됩니다. 한 번에 내보내는 편성이라면 겹칠 수 없습니다.'),
         );
         deckNote.classList.add('is-dup');
@@ -1756,7 +1758,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   const placeCharPanel = (panel: HTMLElement, name: string, label: string) => {
     panel.hidden = false;
     charPanelBody.replaceChildren(panel);
-    charPanelTitle.textContent = `${name} · ${label}`;
+    charPanelTitle.textContent = `${dname(name)} · ${label}`;
     charPanelModal.hidden = false;
   };
   const closeCharPanel = () => {
@@ -1820,7 +1822,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       // 한 덱에 같은 니케를 두 번 넣을 수 없다 — 누르는 길에서 막는 것과 같은 규칙이다.
       const already = deck.squad.indexOf(name);
       if (already >= 0 && already !== index) {
-        showErrors([`${name}은(는) 이미 ${already + 1}번 칸에 있습니다.`]);
+        showErrors([`${dname(name)}은(는) 이미 ${already + 1}번 칸에 있습니다.`]);
         return;
       }
       pickCharacter(name, index);
@@ -1863,7 +1865,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     for (const who of [...sources.keys()].sort((a, b) => a.localeCompare(b, 'ko'))) {
       const option = document.createElement('option');
       option.value = who;
-      option.textContent = who;
+      option.textContent = dname(who);
       pick.append(option);
     }
     const apply = document.createElement('button');
@@ -1916,13 +1918,13 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         carried.push('소장품');
       }
       if (carried.length === 0) {
-        status.textContent = `${pick.value}에게는 베껴올 육성값이 없습니다.`;
+        status.textContent = `${dname(pick.value)}에게는 베껴올 육성값이 없습니다.`;
         return;
       }
       deck.characters[name] = next;
       saveState();
       renderSquad();
-      status.textContent = `${pick.value}의 ${carried.join(' · ')}을(를) ${name}에게 베꼈습니다.`;
+      status.textContent = `${dname(pick.value)}의 ${carried.join(' · ')}을(를) ${dname(name)}에게 베꼈습니다.`;
     });
     const row = document.createElement('div');
     row.className = 'copy-from-row';
@@ -2102,7 +2104,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       if (char?.image) {
         const image = document.createElement('img');
         image.src = `${import.meta.env.BASE_URL}${char.image}`;
-        image.alt = `${char.name} 초상화`;
+        image.alt = `${dname(char.name)} 초상화`;
         image.loading = 'lazy';
         portrait.append(image);
       }
@@ -2119,7 +2121,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       // 판이 닫혀 있으면 어느 칸도 고른 상태로 보이지 않는다 — 고를 상황이 아니면
       // 겨냥한 칸도 없는 게 맞다.
       choose.setAttribute('aria-pressed', String(pickerOpen && activeSlot === index));
-      choose.append(createText('strong', char ? char.name : '빈 칸'));
+      choose.append(createText('strong', char ? dname(char.name) : '빈 칸'));
       choose.append(createText(
         'span',
         char ? `B${char.burstStage} · ${char.elementCode} · ${char.weaponType}` : '눌러서 이 칸에 넣기',
@@ -3609,7 +3611,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         el('span', `burst-now-stage stage-${step.stage}`, `${step.stage}버`),
       );
       const picked = burstPicks[stepKey(step)];
-      head.append(el('span', 'burst-now-pick', picked ? `→ ${picked}` : '→ 자동'));
+      head.append(el('span', 'burst-now-pick', picked ? `→ ${dname(picked)}` : '→ 자동'));
       burstNow.append(head);
 
       const candidates = burstCandidates(step.stage);
@@ -3631,9 +3633,9 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
           img.loading = 'lazy';
           face.append(img);
         } else {
-          face.textContent = name.slice(0, 2);
+          face.textContent = dname(name).slice(0, 2);
         }
-        button.append(face, el('span', 'burst-pick-name', name));
+        button.append(face, el('span', 'burst-pick-name', dname(name)));
         if (key) button.append(el('b', 'burst-pick-key', key));
         button.addEventListener('click', () => pickBurst(name));
         burstPicksBox.append(button);
@@ -3673,13 +3675,13 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
           if (image) {
             const img = document.createElement('img');
             img.src = `${import.meta.env.BASE_URL}${image}`;
-            img.alt = name;
+            img.alt = dname(name);
             img.loading = 'lazy';
             face.append(img);
           } else {
-            face.textContent = name.slice(0, 2);
+            face.textContent = dname(name).slice(0, 2);
           }
-          slot.title = `${cycleNo}번째 ${stage}버 — ${name}`;
+          slot.title = `${cycleNo}번째 ${stage}버 — ${dname(name)}`;
         } else {
           slot.title = `${cycleNo}번째 ${stage}버 — 아직 안 정함(자동)`;
         }
@@ -4090,7 +4092,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     Object.values(picked).reduce((sum, set) => sum + set.size, 0);
 
   function sortRoster(list: CharacterMeta[]): void {
-    const byName = (a: CharacterMeta, b: CharacterMeta) => a.name.localeCompare(b.name, 'ko');
+    const byName = (a: CharacterMeta, b: CharacterMeta) =>
+      dname(a.name).localeCompare(dname(b.name), getLocale());
     const flip = sortDesc ? -1 : 1;
     if (sortKey === 'name') { list.sort((a, b) => flip * byName(a, b)); return; }
     const scoreOf = (char: CharacterMeta): number => {
@@ -4223,7 +4226,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
 
   const renderRosterGrid = () => {
     // 직접 추가한 니케까지 포함해 지금 고를 수 있는 전체를 보여준다.
-    const all = [...catalogByName.values()].sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+    const all = [...catalogByName.values()]
+      .sort((a, b) => dname(a.name).localeCompare(dname(b.name), getLocale()));
     const narrowed = all.filter((char) => {
       const meta = settings.characters[char.name];
       const hit = (key: FilterKey, value: string | undefined) =>
@@ -4238,7 +4242,11 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     sortRoster(narrowed);
     // 칩으로 먼저 좁히고 검색어로 세운다. 검색은 초성과 구분자까지 받아
     // 「ㅋㄹㅇ」·「라피레드」가 걸리고, 친 이름이 맨 앞에 온다.
-    const shown = filterByQuery(narrowed, rosterSearch.value, buildIndex);
+    const shown = filterByQuery(
+      narrowed,
+      rosterSearch.value,
+      (char) => buildIndex(char, dname(char.name)),
+    );
     rosterCount.textContent = shown.length === all.length
       ? `${all.length}명` : `${shown.length} / ${all.length}명`;
     const deck = activeDeck();
@@ -4279,7 +4287,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       }
       cell.append(
         portrait,
-        createText('strong', char.preview ? `${char.name} (임시)` : char.name),
+        createText('strong', char.preview ? `${dname(char.name)} (임시)` : dname(char.name)),
         createText('span', [char.elementCode, char.weaponType, char.className].filter(Boolean).join(' · ')),
       );
       cell.addEventListener('click', () => pickCharacter(char.name));
@@ -4347,7 +4355,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     renderRosterGrid();
     // (임시) 캐릭터는 넣는 순간 바로 알린다 — 결과까지 가서야 알면 이미 늦다.
     if (catalogByName.get(name)?.preview) {
-      status.textContent = `${name}은(는) 아직 (임시) 등록입니다 — 스킬이 공개되지 않아 `
+      status.textContent = `${dname(name)}은(는) 아직 (임시) 등록입니다 — 스킬이 공개되지 않아 `
         + '임의로 창작한 값으로 계산합니다. 실제 성능과 무관하니 참고용으로만 봐 주세요.';
     }
   };
@@ -4861,7 +4869,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     for (const char of catalog) {
       const option = document.createElement('option');
       option.value = char.name;
-      option.textContent = char.name;
+      option.textContent = dname(char.name);
       select.append(option);
     }
     select.value = value;
@@ -5022,15 +5030,15 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       const char = catalogByName.get(name);
       const cell = document.createElement('span');
       cell.className = 'enikk-face';
-      cell.title = name;
+      cell.title = dname(name);
       if (char?.image) {
         const img = document.createElement('img');
         img.src = `${import.meta.env.BASE_URL}${char.image}`;
-        img.alt = name;
+        img.alt = dname(name);
         img.loading = 'lazy';
         cell.append(img);
       }
-      cell.append(createText('em', name));
+      cell.append(createText('em', dname(name)));
       box.append(cell);
     }
     return box;
@@ -5097,8 +5105,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       chip.type = 'button';
       chip.className = 'enikk-exclude-chip';
       chip.dataset.enikkExcludeChip = name;
-      chip.title = `${name} 제외 해제`;
-      chip.append(createText('span', name));
+      chip.title = `${dname(name)} 제외 해제`;
+      chip.append(createText('span', dname(name)));
       chip.append(createText('b', '✕'));
       chip.addEventListener('click', () => {
         enikkExcluded = enikkExcluded.filter((n) => n !== name);

@@ -1,10 +1,16 @@
 import { ko, type MessageCatalog, type MessageKey } from './locales/ko';
+import { characterNamesZhTW } from './character-names-zh-tw';
 
 export type Locale = 'ko' | 'zh-TW' | 'zh-CN';
 
 const FALLBACK_LOCALE: Locale = 'ko';
 const STORAGE_KEY = 'nikke-locale-v1';
 const catalogs: Partial<Record<Locale, MessageCatalog>> = { ko };
+// zh-TW currently localizes official character display names only. General UI
+// messages deliberately continue through the Korean fallback catalog.
+const characterNameCatalogs: Partial<Record<Locale, Readonly<Record<string, string>>>> = {
+  'zh-TW': characterNamesZhTW,
+};
 let activeLocale: Locale = FALLBACK_LOCALE;
 
 const localeAliases: Record<string, Locale> = {
@@ -24,7 +30,10 @@ export function registerMessages(locale: Locale, messages: MessageCatalog): void
 }
 
 export function availableLocales(): Locale[] {
-  return (Object.keys(catalogs) as Locale[]).filter((locale) => catalogs[locale]);
+  return [...new Set([
+    ...Object.keys(catalogs),
+    ...Object.keys(characterNameCatalogs),
+  ] as Locale[])];
 }
 
 export function resolveLocale(value: string | null | undefined): Locale | null {
@@ -34,7 +43,7 @@ export function resolveLocale(value: string | null | undefined): Locale | null {
 }
 
 export function setLocale(locale: Locale, persist = false): Locale {
-  activeLocale = catalogs[locale] ? locale : FALLBACK_LOCALE;
+  activeLocale = catalogs[locale] || characterNameCatalogs[locale] ? locale : FALLBACK_LOCALE;
   document.documentElement.lang = activeLocale;
   if (persist) {
     try {
@@ -62,6 +71,17 @@ export function initializeLocale(): Locale {
 
 export function getLocale(): Locale {
   return activeLocale;
+}
+
+/**
+ * Return a localized display label without changing the canonical Korean key.
+ * Unknown and custom characters intentionally fall back to their input name.
+ */
+export function displayCharacterName(
+  canonicalName: string,
+  locale: Locale = activeLocale,
+): string {
+  return characterNameCatalogs[locale]?.[canonicalName] ?? canonicalName;
 }
 
 export function t(key: MessageKey, values: Record<string, string | number> = {}): string {

@@ -9,6 +9,7 @@
 //   5덱  → 합계 헤드라인 + 덱 5열: 전체 합계가 주인공이고 25명 개별딜을 모두 싣는다
 
 import { formatDamage, formatDps } from './model';
+import { displayCharacterName } from './i18n';
 import type { BatchResult, CharacterMeta, DeckResultEntry } from './types';
 
 const FONT = 'Pretendard, "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif';
@@ -244,7 +245,7 @@ function drawSingle(
   for (const row of rows) {
     portrait(ctx, row.portrait, PAD, y, 40, 7);
     const nameX = PAD + 52;
-    text(ctx, ellipsis(ctx, row.name, 15, 700, 300), nameX, y + 17, 15, COLOR.ink, 700);
+    text(ctx, ellipsis(ctx, displayCharacterName(row.name), 15, 700, 300), nameX, y + 17, 15, COLOR.ink, 700);
     text(ctx, `${row.share.toFixed(1)}% 기여`, nameX, y + 34, 11, COLOR.muted, 500);
     text(ctx, formatDamage(row.damage), CARD_W - PAD, y + 18, 19, COLOR.cyan, 800, 'right');
     text(ctx, formatDps(row.damage / entry.result.duration), CARD_W - PAD, y + 34, 11, COLOR.muted, 500, 'right');
@@ -337,7 +338,7 @@ function drawBatch(
       const damageLabel = formatDamage(row.damage);
       ctx.font = `700 12px ${FONT}`;
       const damageW = ctx.measureText(damageLabel).width;
-      text(ctx, ellipsis(ctx, row.name, 12, 600, colW - 40 - damageW - 6), nameX, cy, 12, COLOR.dim, 600);
+      text(ctx, ellipsis(ctx, displayCharacterName(row.name), 12, 600, colW - 40 - damageW - 6), nameX, cy, 12, COLOR.dim, 600);
       text(ctx, damageLabel, x + colW, cy, 12, COLOR.ink, 700, 'right');
       text(ctx, `${row.share.toFixed(1)}%`, nameX, cy + 13, 10, COLOR.muted, 500);
       cy += 32;

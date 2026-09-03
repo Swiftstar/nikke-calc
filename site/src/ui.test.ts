@@ -8,6 +8,7 @@ import type { StorageLike } from './cache';
 import { LATEST_NOTICE_ID } from './notices';
 import { mountCalculator, type CalculatorClientLike } from './ui';
 import { decodeBattleCode, encodeBattleCode } from './share-code';
+import { setLocale } from './i18n';
 import './styles.css';
 import type {
   CharacterMeta,
@@ -227,6 +228,21 @@ describe('calculator UI', () => {
     expect(savedSquad().slice(0, 3)).toEqual([before[2], before[1], before[0]]);
   });
 
+  it('zh-TW 표시 이름으로 찾아도 저장되는 편성 키는 한국어다', () => {
+    setLocale('zh-TW');
+    mountCalculator(root, { catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage });
+
+    focusSlot(root, 0);
+    searchRoster(root, '麗塔');
+    expect(rosterNames(root)).toEqual(['리타']);
+    const cell = root.querySelector<HTMLButtonElement>('[data-roster-cell="리타"]')!;
+    expect(cell.querySelector('strong')?.textContent).toBe('麗塔');
+    cell.click();
+
+    expect(savedSquad()[0]).toBe('리타');
+    expect(root.querySelector('[data-slot-card="0"] .slot-choose strong')?.textContent).toBe('麗塔');
+  });
+
   it('exposes composition-only presets as a first-class squad action', () => {
     mountCalculator(root, { catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage });
 
@@ -256,6 +272,7 @@ describe('calculator UI', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setLocale('ko');
     root.remove();
   });
 
