@@ -1,15 +1,21 @@
 import { ko, type MessageCatalog, type MessageKey } from './locales/ko';
+import { zhTW } from './locales/zh-tw';
 import { characterNamesZhTW } from './character-names-zh-tw';
+import { cubeNamesZhTW, favoriteItemNamesZhTW } from './equipment-names-zh-tw';
 
 export type Locale = 'ko' | 'zh-TW' | 'zh-CN';
 
 const FALLBACK_LOCALE: Locale = 'ko';
 const STORAGE_KEY = 'nikke-locale-v1';
-const catalogs: Partial<Record<Locale, MessageCatalog>> = { ko };
-// zh-TW currently localizes official character display names only. General UI
-// messages deliberately continue through the Korean fallback catalog.
+const catalogs: Partial<Record<Locale, MessageCatalog>> = { ko, 'zh-TW': zhTW };
 const characterNameCatalogs: Partial<Record<Locale, Readonly<Record<string, string>>>> = {
   'zh-TW': characterNamesZhTW,
+};
+const cubeNameCatalogs: Partial<Record<Locale, Readonly<Record<string, string>>>> = {
+  'zh-TW': cubeNamesZhTW,
+};
+const favoriteItemNameCatalogs: Partial<Record<Locale, Readonly<Record<string, string>>>> = {
+  'zh-TW': favoriteItemNamesZhTW,
 };
 let activeLocale: Locale = FALLBACK_LOCALE;
 
@@ -82,6 +88,34 @@ export function displayCharacterName(
   locale: Locale = activeLocale,
 ): string {
   return characterNameCatalogs[locale]?.[canonicalName] ?? canonicalName;
+}
+
+/** Return an official cube label without changing the canonical Korean key. */
+export function displayCubeName(
+  canonicalName: string,
+  locale: Locale = activeLocale,
+): string {
+  return cubeNameCatalogs[locale]?.[canonicalName] ?? canonicalName;
+}
+
+/** Return an official favorite-item label without changing the canonical Korean key. */
+export function displayFavoriteItemName(
+  canonicalName: string,
+  locale: Locale = activeLocale,
+): string {
+  return favoriteItemNameCatalogs[locale]?.[canonicalName] ?? canonicalName;
+}
+
+/** Localize an element label while keeping the engine's canonical Korean value unchanged. */
+export function displayElementName(canonicalName: string): string {
+  const key = ({
+    작열: 'element.fire',
+    수냉: 'element.water',
+    풍압: 'element.wind',
+    전격: 'element.electric',
+    철갑: 'element.iron',
+  } as const)[canonicalName as '작열' | '수냉' | '풍압' | '전격' | '철갑'];
+  return key ? t(key) : canonicalName;
 }
 
 export function t(key: MessageKey, values: Record<string, string | number> = {}): string {

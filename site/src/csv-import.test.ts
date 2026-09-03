@@ -1,7 +1,10 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it } from 'vitest';
 
 import { parseCollection, parseCsvLine, parseRosterCsv } from './csv-import';
 import type { CharacterSettingsDefaults, SettingsCatalog } from './types';
+import { setLocale } from './i18n';
 
 const charDefaults = (over: Partial<CharacterSettingsDefaults> = {}): CharacterSettingsDefaults => ({
   weaponType: 'SR',
@@ -96,5 +99,17 @@ describe('parseRosterCsv', () => {
     const { overrides } = parseRosterCsv(csv, settings);
     // 프리바티 maxGrowthStage 0 → 돌파+코강이 0으로 클램프
     expect(overrides['프리바티']!.growthStage).toBe(0);
+  });
+
+  it('zh-TW 활성화 중에도 외부 한국어 CSV 열 이름을 그대로 읽는다', () => {
+    setLocale('zh-TW');
+    const csv = [
+      header,
+      '"앨리스","1","2","10","9","8","1","2","3","4","5","6","7","8","9","5","5","5","5"',
+    ].join('\n');
+    const parsed = parseRosterCsv(csv, settings);
+    expect(parsed.matched).toEqual(['앨리스']);
+    expect(parsed.overrides.앨리스?.skillLevels).toEqual({ '1': 10, '2': 9, '3': 8 });
+    setLocale('ko');
   });
 });

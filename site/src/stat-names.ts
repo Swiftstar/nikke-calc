@@ -9,6 +9,8 @@
  * 빈칸이 되는 대신 영어로라도 남는다 — 없는 것보다 낫다.
  */
 
+import { getLocale, t } from './i18n';
+
 /** 값 뒤에 붙는 단위. 퍼센트 포인트인 키가 대부분이고, 몇 개만 초를 쓴다. */
 const SECONDS = new Set([
   'burst_cooldown', 'burst_cooldown_reduce', 'fullburst_duration', 'charge_time_fixed',
@@ -91,6 +93,7 @@ export const STAT_NAMES: Record<string, string> = {
   effect_range_pct: '효과 범위',
   effect_target_count_add: '효과 대상 수 증가',
   element_bonus_pct: '우월 코드 대미지',
+  element_bonus: '우월 코드 대미지',
   element_code_override: '코드 변경',
   element_received_dmg_pct: '코드 피해 증가',
   enemy_buff_cleanse: '적 버프 해제',
@@ -180,9 +183,101 @@ export const STAT_NAMES: Record<string, string> = {
   undying: '불사',
 };
 
+const ZH_STAT_NAMES: Record<string, string> = {
+  accuracy_pct: '命中率',
+  atk_dmg_pct: '造成傷害增加',
+  atk_flat: '攻擊力增加（固定值）',
+  atk_pct: '攻擊力增加',
+  attack_speed_pct: '攻擊速度',
+  burst_charge_pct: '爆裂量表充能',
+  burst_charge_speed_pct: '爆裂量表充能速度',
+  burst_cooldown: '爆裂技能冷卻時間',
+  burst_cooldown_reduce: '爆裂技能冷卻時間減少',
+  burst_damage: '爆裂技能傷害',
+  burst_dmg_pct: '爆裂技能傷害增加',
+  charge_dmg_pct: '蓄力傷害增加',
+  charge_speed_pct: '蓄力速度',
+  core_damage: '核心傷害',
+  core_dmg_pct: '核心傷害增加',
+  crit_dmg: '暴擊傷害',
+  crit_rate: '暴擊率',
+  damage: '傷害',
+  def_ignore_pct: '無視防禦力',
+  def_pct: '防禦力增加',
+  dot_damage: '持續傷害',
+  element_bonus_pct: '優越屬性傷害',
+  element_bonus: '優越屬性傷害',
+  fullburst_duration: '全爆裂持續時間',
+  heal_hp_pct: '恢復體力',
+  invincible: '無敵',
+  max_ammo_flat: '最大裝彈數增加',
+  max_ammo_pct: '最大裝彈數',
+  max_hp_pct: '最大體力',
+  normal_atk_dmg_pct: '普通攻擊傷害增加',
+  part_dmg_pct: '零件傷害增加',
+  pierce_dmg_pct: '貫通傷害增加',
+  pierce_enabled: '賦予貫通',
+  received_dmg: '敵人受到的傷害增加',
+  received_dmg_pct: '受到的傷害增加',
+  reload_speed_pct: '換彈速度',
+  reload_time_fixed: '固定換彈時間',
+  shield_dmg_pct: '護盾傷害增加',
+  skill_cooldown_pct: '技能冷卻時間',
+  skill_cooldown_reduce_pct: '技能冷卻時間減少',
+  split_damage: '分攤傷害',
+  split_dmg_pct: '分攤傷害增加',
+  stun: '暈眩',
+  taunt: '嘲諷',
+};
+
+const ZH_TOKENS: Record<string, string> = {
+  accumulate: '累積', accuracy: '命中', add: '增加', ammo: '彈藥', armor: '裝甲',
+  aoe: '範圍', attachment: '附著', atk: '攻擊力', attack: '攻擊', auto: '自動',
+  bonus: '額外', break: '破壞',
+  buff: '增益', burst: '爆裂', caster: '施放者', charge: '蓄力', cleanse: '解除',
+  consume: '消耗', conversion: '轉換', copy: '複製', core: '核心', count: '次數',
+  cover: '掩體', crit: '暴擊',
+  cooldown: '冷卻時間', current: '目前', damage: '傷害', debuff: '減益',
+  dealt: '造成', discharge: '釋放', down: '降低', duration: '持續時間',
+  decoy: '誘餌', def: '防禦力', disable: '禁止', disabled: '無法使用',
+  dmg: '傷害', dot: '持續傷害', effect: '效果', element: '優越屬性',
+  enabled: '啟用', enemy: '敵人', equal: '平均', exclude: '排除', explosion: '爆炸',
+  extend: '延長', feather: '羽毛', fire: '射擊', fixed: '固定', focus: '集中',
+  force: '強制',
+  from: '依據', fullburst: '全爆裂', gauge: '量表', given: '給予',
+  harmful: '有害效果', heal: '恢復', hp: '體力', immune: '免疫', increase: '增加',
+  indomitable: '不屈', infinite: '無限', init: '初始化', intercept: '攔截',
+  interval: '間隔', invincible: '無敵', lifesteal: '吸血', lock: '鎖定',
+  mag: '倍率', max: '最大', mg: '機槍', movement: '移動',
+  min: '最小', move: '移動', named: '指定', next: '下一次', normal: '普通攻擊',
+  only: '僅', optimal: '適正射程', outgoing: '給予', overcharge: '過量恢復',
+  overflow: '超出', override: '變更', part: '零件', pellet: '彈丸', per: '每',
+  persona: '人格', pierce: '貫通',
+  possessed: '附身', projectile: '投射物', range: '範圍', ratio: '比例',
+  received: '受到', reduce: '減少', reentry: '重新進入',
+  refresh: '重新充能', reload: '換彈', remove: '移除', revive: '復活',
+  scale: '倍率', sequential: '連續', shared: '共用',
+  shield: '護盾', skill: '技能', speed: '速度', split: '分攤', squad: '隊伍',
+  stack: '疊加', state: '狀態', stealth: '隱身', store: '儲存', stun: '暈眩',
+  target: '目標', targeting: '鎖定目標', time: '時間', trigger: '發動',
+  undying: '不死', use: '使用', warmup: '預熱',
+};
+
+const zhStatName = (stat: string): string => {
+  const exact = ZH_STAT_NAMES[stat];
+  if (exact) return exact;
+  return stat
+    .split('_')
+    .filter((token) =>
+      token !== 'pct' && token !== 'flat' && token !== 'based' && token !== 'as' && token !== 'on')
+    .map((token) => ZH_TOKENS[token] ?? token)
+    .join(' · ');
+};
+
 /** 효과 키의 한글 이름. 모르는 키는 그대로 돌려준다. */
 export function statName(stat: string): string {
-  return STAT_NAMES[stat] ?? stat;
+  if (!(stat in STAT_NAMES)) return stat;
+  return getLocale() === 'zh-TW' ? zhStatName(stat) : STAT_NAMES[stat]!;
 }
 
 /**
@@ -194,7 +289,9 @@ export function statName(stat: string): string {
 export function statText(stat: string, value?: number | null): string {
   const name = statName(stat);
   if (typeof value !== 'number' || !Number.isFinite(value)) return name;
-  const unit = SECONDS.has(stat) ? '초' : (stat.endsWith('_pct') || PERCENT.has(stat) ? '%' : '');
+  const unit = SECONDS.has(stat)
+    ? t('common.seconds')
+    : (stat.endsWith('_pct') || PERCENT.has(stat) ? '%' : '');
   const rounded = Math.round(value * 100) / 100;
   return `${name} ${rounded > 0 ? '+' : ''}${rounded}${unit}`;
 }

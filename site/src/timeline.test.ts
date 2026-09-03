@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildSeries, createTimelineBlock, formatSpan, niceMax, buffRuns, buffTextPlan } from './timeline';
 import { spanTargets } from './types';
 import type { BattleTimeline, BuffTrack, DeckResultEntry } from './types';
+import { setLocale } from './i18n';
 
 const timeline: BattleTimeline = {
   bucket: 1,
@@ -265,6 +266,15 @@ describe('createTimelineBlock', () => {
       result: { ...entry.result, timeline: undefined },
     };
     expect(createTimelineBlock(noTimeline)).toBeNull();
+  });
+
+  it('zh-TW에서는 제목·조작 안내·캐릭터 표시 이름을 현지화한다', () => {
+    setLocale('zh-TW');
+    const block = createTimelineBlock(entry)!;
+    expect(block.querySelector('.timeline-heading')?.textContent).toBe('戰鬥時間軸 · 每秒傷害');
+    expect(block.querySelector('.timeline-legend-item .tl-name')?.textContent).toBe('拉毗');
+    expect(block.querySelector('canvas')?.getAttribute('aria-label')).toContain('互動式時間軸');
+    setLocale('ko');
   });
 
   it('renders the burst portrait fallback and stage in the lane below the plot', () => {

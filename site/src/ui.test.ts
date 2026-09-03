@@ -243,6 +243,87 @@ describe('calculator UI', () => {
     expect(root.querySelector('[data-slot-card="0"] .slot-choose strong')?.textContent).toBe('麗塔');
   });
 
+  it('zh-TW에서는 주요 계산기 셸을 번역하되 엔진 식별자 값은 한국어로 유지한다', () => {
+    setLocale('zh-TW');
+    mountCalculator(root, { catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage });
+
+    expect(root.querySelector('h1')?.textContent).toContain('隊伍計算機');
+    expect(root.querySelector('[data-view-tab="calc"]')?.textContent).toBe('計算機');
+    expect(root.querySelector('#squad-heading')?.textContent).toBe('隊伍與妮姬設定');
+    expect(root.querySelector('#settings-heading')?.textContent).toBe('戰鬥條件');
+    expect(root.querySelector('[data-result-panel]')?.textContent).toContain('戰鬥結果');
+    const code = root.querySelector<HTMLSelectElement>('[data-quick-enemy-code]')!;
+    expect([...code.options].map((option) => option.textContent)).toContain('風壓 (燃燒有利)');
+    expect([...code.options].map((option) => option.value)).toEqual(['', '풍압', '수냉', '작열', '전격', '철갑']);
+  });
+
+  it('언어 선택을 저장하고 제공된 reload 경로로 안전하게 다시 띄운다', () => {
+    const reload = vi.fn();
+    mountCalculator(root, {
+      catalog,
+      settings,
+      version: 'v1',
+      client: new FakeClient(),
+      storage: localStorage,
+      reload,
+    });
+
+    const language = root.querySelector<HTMLSelectElement>('[data-language]')!;
+    language.value = 'zh-TW';
+    language.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(localStorage.getItem('nikke-locale-v1')).toBe('zh-TW');
+    expect(document.documentElement.lang).toBe('zh-TW');
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it('zh-TW의 상세 도움말과 유니온·ENIKK·커스텀 창을 한국어 없이 표시한다', () => {
+    setLocale('zh-TW');
+    mountCalculator(root, {
+      catalog,
+      settings,
+      version: 'v1',
+      client: new FakeClient(),
+      storage: localStorage,
+      blablaProxy: 'https://proxy.example',
+    });
+
+    expect(root.querySelector('[data-union-lede-union]')?.textContent)
+      .toContain('每位聯盟成員的實際養成');
+    expect(root.querySelector('[data-view="enikk"]')?.textContent)
+      .toContain('最新賽季前 300 名');
+    expect(root.querySelector('.settings-panel')?.textContent)
+      .toContain('企業研究提升攻擊力');
+
+    root.querySelector<HTMLButtonElement>('[data-add-nikke]')!.click();
+    const custom = root.querySelector<HTMLElement>('[data-custom-modal]')!;
+    expect(custom.textContent).toContain('自行輸入說明');
+    expect(custom.textContent).toContain('特殊或複雜技能無法納入計算');
+  });
+
+  it('zh-TW의 동적 결과와 중복 편성 오류를 중국어 문장으로 만든다', async () => {
+    setLocale('zh-TW');
+    mountCalculator(root, {
+      catalog,
+      settings,
+      version: 'v1',
+      client: new FakeClient(),
+      storage: localStorage,
+    });
+
+    root.querySelector<HTMLElement>('[data-slot-card="4"]')!
+      .dispatchEvent(dragEvent('drop', { 'application/x-nikke-name': '리타' }));
+    expect(root.querySelector('[data-errors]')?.textContent).toContain('麗塔已在第 1 格');
+    expect(root.querySelector('[data-errors]')?.textContent).not.toContain('은(는)');
+
+    root.querySelector<HTMLButtonElement>('button[type="submit"]')!.click();
+    await flush();
+    await flush();
+    expect(root.querySelector('[data-result-panel]')?.textContent).toContain('隊伍總傷害');
+    expect(root.querySelector('[data-result-panel]')?.textContent).toContain('戰鬥 10 秒');
+    expect(root.querySelector('[data-status]')?.textContent).toContain('已完成 1 隊');
+  });
+
   it('exposes composition-only presets as a first-class squad action', () => {
     mountCalculator(root, { catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage });
 
