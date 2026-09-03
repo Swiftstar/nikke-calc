@@ -78,7 +78,11 @@ npm run check-runtime
 
 ## 배포
 
-`master` 브랜치에 푸시하면 GitHub Actions가 GitHub Pages를 자동으로 활성화하고, 의존성을 잠금 파일대로 설치한 뒤 테스트와 프로덕션 빌드를 통과한 `site/dist`만 배포합니다. Vite의 배포 경로와 공개 URL은 Pages 설정에서 받아오므로 포크의 저장소 이름이나 사용자 이름이 달라도 별도 수정 없이 동작합니다.
+처음 한 번은 저장소의 **Settings → Pages → Build and deployment → Source**에서
+**GitHub Actions**를 선택해야 합니다. 워크플로의 `GITHUB_TOKEN`에는 Pages 사이트를
+새로 만드는 관리자 권한이 없으므로 이 단계는 자동화할 수 없습니다.
+
+그 뒤 `master` 브랜치에 푸시하면 GitHub Actions가 의존성을 잠금 파일대로 설치한 뒤 테스트와 프로덕션 빌드를 통과한 `site/dist`만 배포합니다. Vite의 배포 경로와 공개 URL은 Pages 설정에서 받아오므로 포크의 저장소 이름이나 사용자 이름이 달라도 별도 수정 없이 동작합니다.
 
 ### 블라블라링크 연동 (선택)
 
