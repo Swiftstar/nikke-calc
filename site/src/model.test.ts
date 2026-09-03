@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -11,6 +13,7 @@ import {
   validateRequest,
 } from './model';
 import type { BattleSettings, DeckState, SimulationRequest, SimulationResult } from './types';
+import { setLocale } from './i18n';
 
 const valid: SimulationRequest = {
   squad: ['리타'],
@@ -326,6 +329,15 @@ describe('formatDamage', () => {
 
   it('keeps smaller numbers readable', () => {
     expect(formatDamage(999_999)).toBe('999,999');
+  });
+
+  it('uses zh-TW labels and number formatting without changing requests', () => {
+    setLocale('zh-TW');
+    expect(formatDamage(3_207_003_887)).toBe('32.07 億');
+    expect(validateRequest({ ...valid, duration: 181 }))
+      .toContain('戰鬥時間必須介於 10 至 180 秒。');
+    expect(normalizeRequest(valid).squad).toEqual(['리타']);
+    setLocale('ko');
   });
 
   it('carries the collection choice into the request and the cache key', () => {

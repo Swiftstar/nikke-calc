@@ -9,6 +9,7 @@
 //   5덱  → 합계 헤드라인 + 덱 5열: 전체 합계가 주인공이고 25명 개별딜을 모두 싣는다
 
 import { formatDamage, formatDps } from './model';
+import { displayCharacterName, displayElementName, formatNumber, t } from './i18n';
 import type { BatchResult, CharacterMeta, DeckResultEntry } from './types';
 
 const FONT = 'Pretendard, "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif';
@@ -195,13 +196,15 @@ const factChips = (ctx: CanvasRenderingContext2D, chips: string[], x: number, y:
 
 const conditionChips = (meta: ReportMeta, entry: DeckResultEntry): string[] => {
   const chips = [
-    `${entry.result.duration}초 전투`,
-    `방어력 ${meta.enemyDef.toLocaleString('en-US')}`,
-    meta.enemyCode ? `${meta.enemyCode} 코드` : '코드 없음',
-    meta.corePx > 0 ? `코어 ${meta.corePx}px` : '코어 없음',
+    t('unit.secondsBattle', { count: entry.result.duration }),
+    t('report.defense', { value: formatNumber(meta.enemyDef) }),
+    meta.enemyCode
+      ? t('report.code', { code: displayElementName(meta.enemyCode) })
+      : t('report.noCode'),
+    meta.corePx > 0 ? t('battleSummary.core', { px: meta.corePx }) : t('battleSummary.noCore'),
   ];
-  if (meta.hasParts) chips.push('파괴 가능 파츠');
-  chips.push(`시드 ${entry.request.seed}`);
+  if (meta.hasParts) chips.push(t('report.parts'));
+  chips.push(t('result.seed', { seed: entry.request.seed }));
   return chips;
 };
 
@@ -219,20 +222,21 @@ function drawSingle(
   const rows = reportRows(entry, portraits);
   let y = PAD + 16;
 
-  text(ctx, `NIKKE SQUAD SIM · ${entry.result.duration}s`, PAD, y, 11, COLOR.cyan, 800);
+  text(ctx, t('report.canvasKickerSingle', { duration: entry.result.duration }), PAD, y, 11, COLOR.cyan, 800);
   y += 26;
   ctx.font = `800 26px ${FONT}`;
   ctx.fillStyle = COLOR.ink;
   ctx.textAlign = 'left';
-  ctx.fillText('전투 결과 ', PAD, y);
-  const titleWidth = ctx.measureText('전투 결과 ').width;
-  text(ctx, '리포트', PAD + titleWidth, y, 26, COLOR.amber, 800);
+  const titleLead = t('report.canvasTitleLead');
+  ctx.fillText(titleLead, PAD, y);
+  const titleWidth = ctx.measureText(titleLead).width;
+  text(ctx, t('report.canvasTitleAccent'), PAD + titleWidth, y, 26, COLOR.amber, 800);
 
   y += 22;
   line(ctx, PAD, y, CARD_W - PAD * 2);
   y += 30;
 
-  text(ctx, '스쿼드 총 대미지', PAD, y, 12, COLOR.muted, 500);
+  text(ctx, t('result.squadDamage'), PAD, y, 12, COLOR.muted, 500);
   text(ctx, formatDamage(entry.result.squadTotal), CARD_W - PAD, y + 4, 40, COLOR.ink, 800, 'right');
   y += 26;
   text(ctx, formatDps(entry.result.squadTotal / entry.result.duration), CARD_W - PAD, y, 12, COLOR.muted, 500, 'right');
@@ -244,8 +248,8 @@ function drawSingle(
   for (const row of rows) {
     portrait(ctx, row.portrait, PAD, y, 40, 7);
     const nameX = PAD + 52;
-    text(ctx, ellipsis(ctx, row.name, 15, 700, 300), nameX, y + 17, 15, COLOR.ink, 700);
-    text(ctx, `${row.share.toFixed(1)}% 기여`, nameX, y + 34, 11, COLOR.muted, 500);
+    text(ctx, ellipsis(ctx, displayCharacterName(row.name), 15, 700, 300), nameX, y + 17, 15, COLOR.ink, 700);
+    text(ctx, t('result.contribution', { value: row.share.toFixed(1) }), nameX, y + 34, 11, COLOR.muted, 500);
     text(ctx, formatDamage(row.damage), CARD_W - PAD, y + 18, 19, COLOR.cyan, 800, 'right');
     text(ctx, formatDps(row.damage / entry.result.duration), CARD_W - PAD, y + 34, 11, COLOR.muted, 500, 'right');
 
@@ -263,8 +267,8 @@ function drawSingle(
       ctx.fillStyle = COLOR.amber;
       ctx.fillRect(PAD + normalW, barY, skillW, 4);
       const pct = (part: number) => (part / split * 100).toFixed(1);
-      text(ctx, `평타 ${formatDamage(row.normal)} (${pct(row.normal)}%)`, PAD, barY + 20, 11, COLOR.cyan, 600);
-      text(ctx, `스킬 ${formatDamage(row.skill)} (${pct(row.skill)}%)`, PAD + 172, barY + 20, 11, COLOR.amber, 600);
+      text(ctx, t('report.normalBreakdown', { damage: formatDamage(row.normal), share: pct(row.normal) }), PAD, barY + 20, 11, COLOR.cyan, 600);
+      text(ctx, t('report.skillBreakdown', { damage: formatDamage(row.skill), share: pct(row.skill) }), PAD + 172, barY + 20, 11, COLOR.amber, 600);
       y = barY + 34;
     } else {
       ctx.fillStyle = COLOR.cyan;
@@ -279,7 +283,7 @@ function drawSingle(
   y = factChips(ctx, conditionChips(meta, entry), PAD, y);
   y += 26;
   text(ctx, meta.siteUrl, PAD, y, 11, COLOR.muted, 500);
-  text(ctx, `${entry.result.hitCount.toLocaleString('en-US')} 히트`, CARD_W - PAD, y, 11, COLOR.muted, 500, 'right');
+  text(ctx, t('unit.hits', { count: formatNumber(entry.result.hitCount) }), CARD_W - PAD, y, 11, COLOR.muted, 500, 'right');
   return y + PAD - 6;
 }
 
@@ -298,15 +302,16 @@ function drawBatch(
   const duration = decks[0]?.result.duration ?? 1;
   let y = PAD + 16;
 
-  text(ctx, `NIKKE SQUAD SIM · ${decks.length} DECK · ${duration}s`, PAD, y, 11, COLOR.cyan, 800);
-  text(ctx, '전체 덱 총 대미지', width - PAD, y, 12, COLOR.muted, 500, 'right');
+  text(ctx, t('report.canvasKickerMulti', { decks: decks.length, duration }), PAD, y, 11, COLOR.cyan, 800);
+  text(ctx, t('result.allDamage'), width - PAD, y, 12, COLOR.muted, 500, 'right');
   y += 30;
   ctx.font = `800 26px ${FONT}`;
   ctx.fillStyle = COLOR.ink;
   ctx.textAlign = 'left';
-  ctx.fillText(`${decks.length}덱 전투 `, PAD, y);
-  const titleWidth = ctx.measureText(`${decks.length}덱 전투 `).width;
-  text(ctx, '결과', PAD + titleWidth, y, 26, COLOR.amber, 800);
+  const titleLead = t('report.canvasMultiTitleLead', { count: decks.length });
+  ctx.fillText(titleLead, PAD, y);
+  const titleWidth = ctx.measureText(titleLead).width;
+  text(ctx, t('report.canvasMultiTitleAccent'), PAD + titleWidth, y, 26, COLOR.amber, 800);
   text(ctx, formatDamage(batch.total), width - PAD, y + 8, 44, COLOR.ink, 800, 'right');
 
   y += 30;
@@ -325,7 +330,7 @@ function drawBatch(
 
     // 이름을 붙였으면 그대로 싣는다 — 「0장 · 1장 · 2장」처럼 무엇을 견줬는지가
     // 이미지 한 장에 남아야 자료로 쓸 수 있다.
-    text(ctx, meta.deckNames?.[entry.deckId] ?? `덱 ${entry.deckId}`, x, cy, 13, COLOR.ink, 700);
+    text(ctx, meta.deckNames?.[entry.deckId] ?? t('deck.label', { id: entry.deckId }), x, cy, 13, COLOR.ink, 700);
     text(ctx, formatDamage(entry.result.squadTotal), x + colW, cy, 15, COLOR.cyan, 800, 'right');
     cy += 10;
     line(ctx, x, cy, colW);
@@ -337,7 +342,7 @@ function drawBatch(
       const damageLabel = formatDamage(row.damage);
       ctx.font = `700 12px ${FONT}`;
       const damageW = ctx.measureText(damageLabel).width;
-      text(ctx, ellipsis(ctx, row.name, 12, 600, colW - 40 - damageW - 6), nameX, cy, 12, COLOR.dim, 600);
+      text(ctx, ellipsis(ctx, displayCharacterName(row.name), 12, 600, colW - 40 - damageW - 6), nameX, cy, 12, COLOR.dim, 600);
       text(ctx, damageLabel, x + colW, cy, 12, COLOR.ink, 700, 'right');
       text(ctx, `${row.share.toFixed(1)}%`, nameX, cy + 13, 10, COLOR.muted, 500);
       cy += 32;
@@ -350,11 +355,11 @@ function drawBatch(
   y += 22;
 
   const first = decks[0];
-  y = factChips(ctx, first ? conditionChips(meta, first) : [`${duration}초 전투`], PAD, y);
+  y = factChips(ctx, first ? conditionChips(meta, first) : [t('unit.secondsBattle', { count: duration })], PAD, y);
   y += 26;
   const hits = decks.reduce((sum, entry) => sum + entry.result.hitCount, 0);
   text(ctx, meta.siteUrl, PAD, y, 11, COLOR.muted, 500);
-  text(ctx, `${decks.length}덱 · ${hits.toLocaleString('en-US')} 히트`, width - PAD, y, 11, COLOR.muted, 500, 'right');
+  text(ctx, t('report.deckHits', { decks: decks.length, hits: formatNumber(hits) }), width - PAD, y, 11, COLOR.muted, 500, 'right');
   return y + PAD - 6;
 }
 
@@ -377,7 +382,7 @@ export function renderReport(
 
   const measure = createCanvas();
   const measureCtx = measure.getContext('2d');
-  if (!measureCtx) throw new Error('캔버스를 사용할 수 없는 브라우저입니다.');
+  if (!measureCtx) throw new Error(t('report.canvasUnavailable'));
   const single = batch.decks[0];
   const height = multi
     ? drawBatch(measureCtx, batch, meta, portraits, width)
@@ -387,7 +392,7 @@ export function renderReport(
   canvas.width = Math.round(width * SCALE);
   canvas.height = Math.round(height * SCALE);
   const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('캔버스를 사용할 수 없는 브라우저입니다.');
+  if (!ctx) throw new Error(t('report.canvasUnavailable'));
   ctx.scale(SCALE, SCALE);
 
   ctx.fillStyle = COLOR.bg;
@@ -405,7 +410,7 @@ export function renderReport(
 export const canvasToBlob = (canvas: HTMLCanvasElement): Promise<Blob> => new Promise((resolve, reject) => {
   canvas.toBlob((blob) => {
     if (blob) resolve(blob);
-    else reject(new Error('이미지를 만들지 못했습니다.'));
+    else reject(new Error(t('report.blobFailed')));
   }, 'image/png');
 });
 
@@ -442,5 +447,7 @@ export function downloadImage(blob: Blob, filename: string): void {
 
 export const reportFilename = (batch: BatchResult): string => {
   const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-');
-  return `nikke-${batch.decks.length > 1 ? `${batch.decks.length}deck` : 'squad'}-${stamp}.png`;
+  return batch.decks.length > 1
+    ? t('report.filenameMulti', { count: batch.decks.length, stamp })
+    : t('report.filenameSingle', { stamp });
 };

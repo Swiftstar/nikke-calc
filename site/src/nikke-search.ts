@@ -35,6 +35,8 @@ export interface SearchIndex {
   name: string;
   /** 구분자를 지운 이름 */
   key: string;
+  /** 현재 locale의 표시 이름. 정식 한국어 키와 같은 무게로 검색한다. */
+  displayKey: string;
   /** 구분자를 지운 초성 */
   cho: string;
   /** 별칭(`수니스`)을 구분자 지운 형태로. 이름과 같은 무게로 친다 */
@@ -45,11 +47,12 @@ export interface SearchIndex {
   tags: string;
 }
 
-export function buildIndex(char: CharacterMeta): SearchIndex {
+export function buildIndex(char: CharacterMeta, displayName = char.name): SearchIndex {
   const aliases = char.aliases ?? [];
   return {
     name: char.name,
     key: squash(char.name),
+    displayKey: squash(displayName),
     cho: squash(initials(char.name)),
     aliasKeys: aliases.map(squash).filter(Boolean),
     aliasChos: aliases.map((alias) => squash(initials(alias))).filter(Boolean),
@@ -67,9 +70,11 @@ export function rankOf(query: string, index: SearchIndex): number {
   const q = squash(query);
   if (!q) return 0;
   // 별칭은 유저가 일부러 정한 손잡이다 — 이름 첫머리와 같은 무게로 앞에 세운다.
-  if (index.key.startsWith(q) || index.aliasKeys.some((a) => a.startsWith(q))) return 0;
+  if (index.key.startsWith(q) || index.displayKey.startsWith(q)
+    || index.aliasKeys.some((a) => a.startsWith(q))) return 0;
   if (index.cho.startsWith(q) || index.aliasChos.some((a) => a.startsWith(q))) return 1;
-  if (index.key.includes(q) || index.aliasKeys.some((a) => a.includes(q))) return 2;
+  if (index.key.includes(q) || index.displayKey.includes(q)
+    || index.aliasKeys.some((a) => a.includes(q))) return 2;
   if (index.cho.includes(q) || index.aliasChos.some((a) => a.includes(q))) return 3;
   if (index.tags.includes(q)) return 4;
   return NO_MATCH;

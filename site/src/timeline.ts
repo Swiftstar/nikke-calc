@@ -1,4 +1,5 @@
 import { formatDamage } from './model';
+import { displayCharacterName, displayElementName, t } from './i18n';
 import { statText } from './stat-names';
 import { spanTargets } from './types';
 import type { BattleTimeline, BuffSpan, BuffTrack, DeckResultEntry } from './types';
@@ -158,7 +159,10 @@ export function formatSpan(index: number, bucket: number): string {
   const digits = Number.isInteger(bucket)
     ? 0 : Math.min(3, (String(bucket).split('.')[1] ?? '').length);
   const from = index * bucket;
-  return `${from.toFixed(digits)}–${(from + bucket).toFixed(digits)}초`;
+  return t('timeline.span', {
+    from: from.toFixed(digits),
+    to: (from + bucket).toFixed(digits),
+  });
 }
 
 /** peak 이상이면서 축 눈금으로 깔끔한 상한값. */
@@ -384,10 +388,11 @@ class TimelineChart {
       }
     };
     for (const w of this.series.immuneWindows) {
-      band(w.from, w.to, 'rgba(255,119,135,0.16)', '족자');
+      band(w.from, w.to, 'rgba(255,119,135,0.16)', t('phase.immune'));
     }
     for (const w of this.series.elementWindows) {
-      band(w.from, w.to, 'rgba(96,165,250,0.16)', `속저 ${w.code}`);
+      band(w.from, w.to, 'rgba(96,165,250,0.16)',
+        t('timeline.elementBand', { code: displayElementName(w.code) }));
     }
     ctx.textAlign = 'left';
 
@@ -494,7 +499,9 @@ class TimelineChart {
       ctx.restore();
       this.buffMoreHit = null;
       if (this.buffHidden > 0 || this.buffExpanded) {
-        const label = this.buffExpanded ? '접기' : `+${this.buffHidden}줄 더 보기`;
+        const label = this.buffExpanded
+          ? t('common.collapse')
+          : t('timeline.moreBuffRows', { count: this.buffHidden });
         ctx.fillStyle = '#cfe3f2';
         ctx.font = '700 10px system-ui, sans-serif';
         ctx.textAlign = 'right';
@@ -581,7 +588,7 @@ class TimelineChart {
         ctx.font = '700 10px ui-monospace, monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(pin.name.slice(0, 1), x, cy);
+        ctx.fillText(displayCharacterName(pin.name).slice(0, 1), x, cy);
       }
       ctx.restore();
 
@@ -641,11 +648,11 @@ class TimelineChart {
     const total = rows.reduce((sum, row) => sum + row.value, 0);
     const lines = rows.map((row) =>
       `<div class="tl-tip-row"><span class="tl-dot" style="background:${row.color}"></span>` +
-      `<span class="tl-name">${row.name}</span><span class="tl-val">${formatDamage(row.value)}</span></div>`,
+      `<span class="tl-name">${displayCharacterName(row.name)}</span><span class="tl-val">${formatDamage(row.value)}</span></div>`,
     ).join('');
     this.tooltip.innerHTML =
       `<div class="tl-tip-time">${formatSpan(index, this.series.bucket)}</div>${lines}` +
-      `<div class="tl-tip-total"><span>합계</span><span>${formatDamage(total)}</span></div>`;
+      `<div class="tl-tip-total"><span>${t('csv.total')}</span><span>${formatDamage(total)}</span></div>`;
     const host = this.canvas.parentElement!.getBoundingClientRect();
     let px = clientX - host.left + 14;
     if (px + 180 > host.width) px = clientX - host.left - 194;
@@ -658,33 +665,34 @@ class TimelineChart {
   private showBuffTip(track: BuffTrack, span: BuffSpan,
     clientX: number, clientY: number): void {
     const color = this.series.colors[track.caster] ?? '#8394a6';
-    const seconds = (value: number) => `${value.toFixed(1)}초`;
+    const seconds = (value: number) => t('timeline.seconds', { value: value.toFixed(1) });
     const [from, to, stack] = span;
     // 대상이 발동마다 갈리는 버프가 있다 — 이 구간을 실제로 받은 사람만 보인다.
     const faces = spanTargets(track, span).map((name) => {
       const url = this.portraits.get(name)?.src;
       const dot = `<span class="tl-dot" style="background:${this.series.colors[name] ?? '#8394a6'}"></span>`;
+      const displayName = displayCharacterName(name);
       return url
-        ? `<img class="tl-face" src="${url}" alt="${name}" title="${name}" />`
-        : `<span class="tl-face tl-face-none" title="${name}">${dot}</span>`;
+        ? `<img class="tl-face" src="${url}" alt="${displayName}" title="${displayName}" />`
+        : `<span class="tl-face tl-face-none" title="${displayName}">${dot}</span>`;
     }).join('');
     const rows: string[] = [
-      `<div class="tl-tip-row"><span class="tl-name">지속</span>` +
+      `<div class="tl-tip-row"><span class="tl-name">${t('timeline.duration')}</span>` +
       `<span class="tl-val">${seconds(from)} → ${seconds(to)} (${seconds(to - from)})</span></div>`,
-      `<div class="tl-tip-row"><span class="tl-name">건 사람</span><span class="tl-val">${track.caster}</span></div>`,
+      `<div class="tl-tip-row"><span class="tl-name">${t('timeline.caster')}</span><span class="tl-val">${displayCharacterName(track.caster)}</span></div>`,
     ];
     if (track.stat) {
       // 엔진 키는 영어다 — 화면에는 한글로 적고, 원래 키는 마우스를 올리면 나온다.
-      rows.push(`<div class="tl-tip-row"><span class="tl-name">효과</span>`
+      rows.push(`<div class="tl-tip-row"><span class="tl-name">${t('timeline.effect')}</span>`
         + `<span class="tl-val" title="${track.stat}">${statText(track.stat, track.value)}</span></div>`);
     }
     if (track.maxStack > 1) {
-      rows.push(`<div class="tl-tip-row"><span class="tl-name">중첩</span>` +
+      rows.push(`<div class="tl-tip-row"><span class="tl-name">${t('timeline.stack')}</span>` +
         `<span class="tl-val">${stack} / ${track.maxStack}</span></div>`);
     }
     // 받는 사람은 얼굴로 보인다 — 다섯 명한테 걸리는 버프를 이름으로 늘어놓으면 길기만 하다.
     const targets = faces
-      ? `<div class="tl-tip-faces"><span class="tl-name">받는 사람</span><span>${faces}</span></div>`
+      ? `<div class="tl-tip-faces"><span class="tl-name">${t('timeline.targets')}</span><span>${faces}</span></div>`
       : '';
     this.tooltip.innerHTML =
       `<div class="tl-tip-time" style="color:${color}">${track.name}</div>${rows.join('')}${targets}`;
@@ -794,12 +802,12 @@ export function createTimelineBlock(
   head.className = 'timeline-head';
   const heading = document.createElement('p');
   heading.className = 'timeline-heading';
-  heading.textContent = '전투 타임라인 · 초당 대미지';
+  heading.textContent = t('timeline.heading');
   const controls = document.createElement('div');
   controls.className = 'timeline-controls';
-  const zoomOut = button('−', '축소');
-  const zoomIn = button('+', '확대');
-  const reset = button('전체', '전체 보기');
+  const zoomOut = button('−', t('timeline.zoomOut'));
+  const zoomIn = button('+', t('timeline.zoomIn'));
+  const reset = button(t('timeline.all'), t('timeline.viewAll'));
   controls.append(zoomOut, zoomIn, reset);
   head.append(heading, controls);
   block.append(head);
@@ -813,7 +821,7 @@ export function createTimelineBlock(
   const canvas = document.createElement('canvas');
   canvas.className = 'timeline-canvas';
   canvas.setAttribute('role', 'img');
-  canvas.setAttribute('aria-label', '캐릭터별 초당 대미지를 한 그래프에 겹쳐 그린 인터랙티브 타임라인. 드래그로 이동, 휠·버튼으로 확대·축소.');
+  canvas.setAttribute('aria-label', t('timeline.aria'));
   const tooltip = document.createElement('div');
   tooltip.className = 'timeline-tip';
   tooltip.style.display = 'none';
@@ -822,7 +830,7 @@ export function createTimelineBlock(
 
   const note = document.createElement('p');
   note.className = 'timeline-legend';
-  note.textContent = '드래그 이동 · 휠/버튼 확대·축소 · 노란 밴드 = 풀버스트 · 붉은 밴드 = 족자 · 푸른 밴드 = 속저 · 아래 초상화 = 버스트 사용(배지는 단계)';
+  note.textContent = t('timeline.note');
   block.append(note);
 
   const chart = new TimelineChart(canvas, tooltip, series, portraitUrls);
@@ -836,10 +844,10 @@ export function createTimelineBlock(
     buffToggle.className = 'timeline-buff-toggle';
     buffToggle.dataset.timelineBuffs = '';
     buffToggle.setAttribute('aria-pressed', 'false');
-    buffToggle.title = '버프가 걸려 있던 구간을 그래프 위에 막대로 보여 줍니다. 막대에 마우스를 올리면 자세히 나옵니다';
+    buffToggle.title = t('timeline.buffsTitle');
     const mark = textSpan('', 'tl-buff-mark');
     mark.setAttribute('aria-hidden', 'true');
-    buffToggle.append(mark, textSpan('버프 표시', ''));
+    buffToggle.append(mark, textSpan(t('timeline.showBuffs'), ''));
     buffToggle.addEventListener('click', () => {
       const on = buffToggle.getAttribute('aria-pressed') !== 'true';
       buffToggle.setAttribute('aria-pressed', String(on));
@@ -860,7 +868,7 @@ export function createTimelineBlock(
     const dot = document.createElement('span');
     dot.className = 'tl-dot';
     dot.style.background = series.colors[name]!;
-    item.append(dot, textSpan(name, 'tl-name'), textSpan(formatDamage(series.totals[name] ?? 0), 'tl-total'));
+    item.append(dot, textSpan(displayCharacterName(name), 'tl-name'), textSpan(formatDamage(series.totals[name] ?? 0), 'tl-total'));
     item.addEventListener('click', () => {
       const off = item.classList.toggle('is-off');
       chart.setHidden(name, off);

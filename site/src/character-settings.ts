@@ -10,6 +10,15 @@ import type {
   SettingsCatalog,
   SkillLevels,
 } from './types';
+import {
+  displayCharacterName,
+  displayCubeName,
+  displayFavoriteItemName,
+  formatNumber,
+  getLocale,
+  t,
+} from './i18n';
+import { statName } from './stat-names';
 
 // 톡톡이를 직접 켤 때 채워지는 발사 속도(발/초) — 44톡톡이. 유저 지정값이다.
 // 220ms(≈4.5발/초)는 게임이 강제하는 하한이라 그 위는 사람이 낼 수 없다
@@ -23,17 +32,26 @@ const WEAPON_MODE_SWAP_DEFAULT = 6;
 
 const EQUIP_PARTS: EquipPart[] = ['머리', '몸통', '팔', '다리'];
 // 내부 부위 키는 '팔'이지만 UI·CSV 표기는 '장갑'이다.
-const EQUIP_PART_LABELS: Record<EquipPart, string> = {
-  머리: '머리', 몸통: '몸통', 팔: '장갑', 다리: '다리',
-};
-
-const skillLabels: Array<[keyof SkillLevels, string]> = [
-  ['1', '스킬 1'],
-  ['2', '스킬 2'],
-  ['3', '버스트'],
-];
+const equipPartLabel = (part: EquipPart): string => ({
+  머리: t('character.equipHead'),
+  몸통: t('character.equipBody'),
+  팔: t('character.equipGloves'),
+  다리: t('character.equipLegs'),
+})[part];
 
 const numberText = (value: number, digits = 2): string => value.toFixed(digits);
+
+const cubeMetaLabel = (name: string, catalog: SettingsCatalog): string => {
+  const meta = catalog.cubes[name];
+  if (getLocale() === 'zh-TW') {
+    const localized = displayCubeName(name);
+    if (localized !== name) return localized;
+  }
+  return meta?.label ?? name;
+};
+
+const statLabel = (key: string, fallback: string): string =>
+  getLocale() === 'zh-TW' ? statName(key) : fallback;
 
 /** 글자 한 조각. 같은 모양을 열 번 넘게 쓰므로 한 줄로 묶는다. */
 const textSpan = (text: string, className?: string): HTMLSpanElement => {
@@ -74,7 +92,9 @@ export function defaultCharacterOverrides(
   catalog: SettingsCatalog,
 ): CharacterOverrides {
   const defaults = catalog.characters[name];
-  if (!defaults) throw new Error(`${name}: 기본 장비 설정을 찾을 수 없습니다.`);
+  if (!defaults) {
+    throw new Error(t('character.defaultsMissing', { name: displayCharacterName(name) }));
+  }
   return {
     growthStage: defaults.growthStage,
     skillLevels: { ...defaults.skillLevels },
@@ -99,23 +119,41 @@ function makeInputUnit(input: HTMLInputElement, unit: string): HTMLElement {
 
 function summaryText(name: string, catalog: SettingsCatalog, value?: CharacterOverrides): string {
   const defaults = catalog.characters[name];
-  if (!defaults) return '설정 정보 없음';
+  if (!defaults) return t('character.noSettings');
   const skillLevels = value?.skillLevels ?? defaults.skillLevels;
   const overload = value?.overload ?? defaults.overload;
   const cube = value?.cube ?? defaults.cube;
   const growthStage = value?.growthStage ?? defaults.growthStage;
   const controlSummary = value?.control === undefined
-    ? '컨트롤 추천 자동'
-    : `컨트롤 직접 ${Object.keys(value.control).length}개`;
+    ? t('character.controlRecommended')
+    : t('character.controlManualCount', { count: Object.keys(value.control).length });
   const growth = defaults.growthOptions.find((option) => option.value === growthStage)
-    ?? { value: growthStage, label: `단계 ${growthStage}`, affinity: 0 };
+    ?? { value: growthStage, label: t('growth.stage', { stage: growthStage }), affinity: 0 };
   const skillSummary = defaults.skillLevelsLocked
-    ? '수치 미공개 · Lv10 고정'
-    : `스킬 ${skillLevels['1']} / ${skillLevels['2']} / ${skillLevels['3']}`;
-  return `${value ? '개별값' : '기본값'} · ${growth.label} · 호감도 ${growth.affinity} · ${skillSummary} · `
-    + `우코 ${numberText(overload.element_bonus ?? 0)} · `
-    + `공증 ${numberText(overload.atk_pct ?? 0)} · 장탄 ${numberText(overload.max_ammo_pct ?? 0)} · `
-    + `${cube.name === NO_CUBE ? '큐브 없음' : `${cube.name} Lv${cube.level}`} · ${controlSummary}`;
+    ? t('character.previewLocked')
+    : t('character.skillSummary', {
+      one: skillLevels['1'], two: skillLevels['2'], burst: skillLevels['3'],
+    });
+  const growthLabel = getLocale() === 'zh-TW'
+    ? (growth.value === 0
+      ? t('character.growthBase')
+      : growth.value <= 3
+        ? t('character.growthLimit', { count: growth.value })
+        : t('character.growthCore', { count: growth.value - 3 }))
+    : growth.label;
+  return t('character.summary', {
+    source: value ? t('character.customValues') : t('character.defaultValues'),
+    growth: growthLabel,
+    affinity: growth.affinity,
+    skills: skillSummary,
+    element: numberText(overload.element_bonus ?? 0),
+    attack: numberText(overload.atk_pct ?? 0),
+    ammo: numberText(overload.max_ammo_pct ?? 0),
+    cube: cube.name === NO_CUBE
+      ? t('character.noCube')
+      : t('character.cubeLevel', { cube: cubeMetaLabel(cube.name, catalog), level: cube.level }),
+    control: controlSummary,
+  });
 }
 
 /**
@@ -130,7 +168,12 @@ export const CONTROL_NAMES: Record<string, string> = {
 };
 
 /** 컨트롤 키 → 한글. 모르는 키는 그대로 둔다(새 컨트롤이 생겨도 빈칸이 되지 않는다). */
-export const controlName = (key: string): string => CONTROL_NAMES[key] ?? key;
+export const controlName = (key: string): string => ({
+  tap_fire: t('character.tapFire'),
+  hold: t('character.holdControl'),
+  reload: t('character.reloadControl'),
+  cover: t('character.coverControl'),
+})[key] ?? key;
 
 /**
  * 「지금 이 조합에서 실제로 걸리는 컨트롤」 문구.
@@ -155,11 +198,15 @@ export function recommendedControlText(
     const who = rule.withMembers.find((member) => roster.has(member));
     if (!who) { unresolved = unresolved || squad === undefined; continue; }
     for (const key of Object.keys(rule.control)) {
-      names.push(`${controlName(key)}(${who}와 함께라서)`);
+      names.push(t('character.controlWith', {
+        control: controlName(key), name: displayCharacterName(who),
+      }));
     }
   }
-  const head = names.length ? `현재 기본 추천: ${names.join(' · ')}` : '현재 기본 추천: 자동 사격';
-  return unresolved ? `${head} · 스쿼드 조합에 따라 추천 컨트롤이 추가됩니다.` : head;
+  const head = t('character.currentRecommendation', {
+    controls: names.length ? names.join(' · ') : t('character.autoFire'),
+  });
+  return unresolved ? `${head} · ${t('character.conditionalRecommendation')}` : head;
 }
 
 /** 조합 조건부 컨트롤 한 줄 — 지금 걸렸는지와, 왜 걸리는지. */
@@ -203,7 +250,18 @@ export function controlRuleNotes(
   return (defaults.conditionalControl ?? []).map((rule) => {
     const names = Object.keys(rule.control).map(controlName).join(' · ');
     const here = rule.withMembers.find((member) => roster.has(member));
-    const who = here ?? rule.withMembers.join(' 또는 ');
+    const who = (here ? [here] : rule.withMembers)
+      .map((member) => displayCharacterName(member))
+      .join(t('character.or'));
+    if (getLocale() === 'zh-TW') {
+      return {
+        active: Boolean(here),
+        headline: here
+          ? t('character.controlRuleActive', { name: who, control: names })
+          : t('character.controlRuleInactive', { name: who, control: names }),
+        help: rule.help ?? '',
+      };
+    }
     const subject = withParticle(names, '이', '가');
     return {
       active: Boolean(here),
@@ -277,12 +335,16 @@ export type CharPanelKind = 'settings';
 export function controlChipText(value?: CharacterOverrides): string {
   const picked = value?.control === undefined ? -1 : Object.keys(value.control).length;
   // 하나도 안 고른 «직접»은 «직접 0개»가 아니라 그냥 직접이다 — 0을 세어 보일 이유가 없다.
-  const control = picked < 0 ? '추천 자동' : picked === 0 ? '직접 설정' : `직접 ${picked}개`;
+  const control = picked < 0
+    ? t('character.recommendedAuto')
+    : picked === 0
+      ? t('character.manualSettings')
+      : t('character.manualCount', { count: picked });
   const burst = value?.burst;
-  const burstText = burst === undefined ? '버스트 자동'
-    : burst.mode === 'priority' ? `버스트 ${burst.every}의 배수`
-    : burst.mode === 'endgame' ? `버스트 막바지 ${burst.seconds}초`
-    : '버스트 안 씀';
+  const burstText = burst === undefined ? t('character.burstAuto')
+    : burst.mode === 'priority' ? t('character.burstMultiple', { count: burst.every })
+    : burst.mode === 'endgame' ? t('character.burstEndgame', { seconds: burst.seconds })
+    : t('character.burstSkip');
   return `${control} · ${burstText}`;
 }
 
@@ -376,7 +438,7 @@ export function renderCharacterSettings(
       const next = head.getAttribute('aria-expanded') !== 'true';
       head.setAttribute('aria-expanded', String(next));
       panel.hidden = !next;
-      hint.textContent = next ? '접기' : '열기';
+      hint.textContent = next ? t('common.collapse') : t('battle.open');
     });
     return { head, panel };
   };
@@ -397,7 +459,7 @@ export function renderCharacterSettings(
   summaryFold.className = 'loadout-open';
   summaryFold.dataset.loadoutOpen = '';
   summaryFold.setAttribute('aria-expanded', String(summaryWasOpen));
-  summaryFold.append(document.createTextNode('개별값'));
+  summaryFold.append(document.createTextNode(t('character.customValues')));
   const summaryCaret = document.createElement('b');
   summaryCaret.className = 'loadout-caret';
   summaryCaret.textContent = summaryWasOpen ? '▴' : '▾';
@@ -445,18 +507,18 @@ export function renderCharacterSettings(
     const special = row.targets.length > 1;
     // 미리 계산은 배경에서 돈다. 빈 괄호만 보이면 기능이 꺼진 것처럼 보이므로
     // 도는 동안은 그렇다고 적는다.
-    who.textContent = row.pending ? '[계산중]'
-      : special ? '[특이케이스]'
-        : `[${row.targets.join(', ')}]`;
+    who.textContent = row.pending ? t('character.pendingBracket')
+      : special ? t('character.specialCaseBracket')
+        : `[${row.targets.map((target) => displayCharacterName(target)).join(', ')}]`;
     if (row.pending) box.classList.add('is-pending');
     box.append(who);
     box.title = row.pending
-      ? `${row.buff} — 대상을 계산하는 중입니다`
+      ? t('character.targetCalculating', { buff: row.buff })
       : row.targets.length === 0
-        ? `${row.buff} — 아직 계산하지 않았거나 발동 조건이 맞지 않습니다`
+        ? t('character.targetUnavailable', { buff: row.buff })
         : special
-          ? `${row.buff} — ${row.count}회 발동 · 대상이 ${row.targets.length}명 사이에서 갈립니다`
-          : `${row.buff} — ${row.count}회 발동`;
+          ? t('buff.splitTargets', { buff: row.buff, count: row.count, targets: row.targets.length })
+          : t('character.buffTriggered', { buff: row.buff, count: row.count });
 
     // 순서보기는 대상이 갈릴 때만 — 고정 대상은 이름만으로 충분하다.
     if (onShowOrder && special && (row.sequence?.length ?? 0) > 0) {
@@ -464,7 +526,7 @@ export function renderCharacterSettings(
       open.type = 'button';
       open.className = 'buff-order-open';
       open.dataset.buffOrderOpen = row.buff;
-      open.textContent = '순서보기';
+      open.textContent = t('character.viewOrder');
       open.addEventListener('click', () => onShowOrder(row));
       box.append(open);
     }
@@ -479,7 +541,7 @@ export function renderCharacterSettings(
   toggle.checked = Boolean(value);
   toggle.dataset.customToggle = '';
   const toggleText = document.createElement('span');
-  toggleText.textContent = '개별 설정';
+  toggleText.textContent = t('character.customSettings');
   toggleLabel.append(toggle, toggleText);
   settingsRow.append(toggleLabel);
   toggle.addEventListener('change', () => {
@@ -530,13 +592,19 @@ export function renderCharacterSettings(
   const growthEditor = document.createElement('section');
   growthEditor.className = 'growth-editor';
   const growthHeading = document.createElement('h4');
-  growthHeading.textContent = `돌파 · 코어 강화 (${defaults.rarity})`;
+  growthHeading.textContent = t('character.growthHeading', { rarity: defaults.rarity });
   const growthSelect = document.createElement('select');
   growthSelect.dataset.growthStage = '';
   for (const growth of defaults.growthOptions) {
     const option = document.createElement('option');
     option.value = String(growth.value);
-    option.textContent = growth.label;
+    option.textContent = getLocale() === 'zh-TW'
+      ? (growth.value === 0
+        ? t('character.growthBase')
+        : growth.value <= 3
+          ? t('character.growthLimit', { count: growth.value })
+          : t('character.growthCore', { count: growth.value - 3 }))
+      : growth.label;
     growthSelect.append(option);
   }
   growthSelect.value = String(current.growthStage);
@@ -546,27 +614,31 @@ export function renderCharacterSettings(
     commit(next);
   });
   const growthNote = document.createElement('p');
-  growthNote.textContent = '호감도는 돌파별 최대치로 적용합니다.';
+  growthNote.textContent = t('character.affinityNote');
   growthEditor.append(growthHeading, growthSelect, growthNote);
   body.append(growthEditor);
 
   const skillEditor = document.createElement('section');
   skillEditor.className = 'skill-level-editor';
   const skillHeading = document.createElement('h4');
-  skillHeading.textContent = '스킬 레벨';
+  skillHeading.textContent = t('character.skillLevels');
   skillEditor.append(skillHeading);
   if (defaults.skillLevelsLocked) {
     skillEditor.classList.add('is-locked');
     skillEditor.dataset.skillLevelsLocked = '';
     const locked = document.createElement('strong');
-    locked.textContent = '수치 미공개 · Lv10 고정';
+    locked.textContent = t('character.previewLocked');
     const explanation = document.createElement('p');
-    explanation.textContent = '1~9레벨 계수가 공개되지 않아 Lv10 기준으로만 계산합니다.';
+    explanation.textContent = t('character.previewExplanation');
     skillEditor.append(locked, explanation);
   } else {
     const skillControls = document.createElement('div');
     skillControls.className = 'skill-level-controls';
-    for (const [key, labelText] of skillLabels) {
+    for (const [key, labelText] of [
+      ['1', t('character.skillOne')],
+      ['2', t('character.skillTwo')],
+      ['3', t('character.burstSkill')],
+    ] as Array<[keyof SkillLevels, string]>) {
       const label = document.createElement('label');
       const text = document.createElement('span');
       text.textContent = labelText;
@@ -594,7 +666,7 @@ export function renderCharacterSettings(
   const burstEditor = document.createElement('section');
   burstEditor.className = 'burst-editor';
   const burstHeading = document.createElement('h4');
-  burstHeading.textContent = '버스트 운용';
+  burstHeading.textContent = t('character.burstUsage');
   const burstMode = current.burst?.mode ?? 'auto';
   const burstEvery = current.burst?.mode === 'priority' ? current.burst.every : 1;
   const burstLast = current.burst?.mode === 'endgame' ? current.burst.seconds : ENDGAME_DEFAULT;
@@ -604,8 +676,8 @@ export function renderCharacterSettings(
   const burstSelect = document.createElement('select');
   burstSelect.dataset.burstAssignment = '';
   for (const [optionValue, optionLabel] of [
-    ['auto', '자동'], ['priority', 'n의 배수 우선 사용'],
-    ['endgame', '막바지 최우선'], ['skip', '안 씀'],
+    ['auto', t('burst.auto')], ['priority', t('character.burstPriority')],
+    ['endgame', t('character.burstEndgameFirst')], ['skip', t('character.doNotUse')],
   ] as Array<[string, string]>) {
     const option = document.createElement('option');
     option.value = optionValue;
@@ -624,7 +696,7 @@ export function renderCharacterSettings(
   everyInput.value = String(burstEvery);
   everyInput.dataset.burstEvery = '';
   const everyText = document.createElement('span');
-  everyText.textContent = '의 배수 사이클마다';
+  everyText.textContent = t('character.everyMultipleCycle');
   everyWrap.append(everyInput, everyText);
 
   // 막바지 최우선 — 큰 한 방을 전투 끝에 맞추려는 운용이다.
@@ -632,7 +704,7 @@ export function renderCharacterSettings(
   lastWrap.className = 'burst-every';
   lastWrap.hidden = burstMode !== 'endgame';
   const lastText = document.createElement('span');
-  lastText.textContent = '남은 시간';
+  lastText.textContent = t('character.remainingTime');
   const lastInput = document.createElement('input');
   lastInput.type = 'number';
   lastInput.min = '1';
@@ -641,7 +713,7 @@ export function renderCharacterSettings(
   lastInput.value = String(burstLast);
   lastInput.dataset.burstLast = '';
   const lastUnit = document.createElement('span');
-  lastUnit.textContent = '초 미만일 때';
+  lastUnit.textContent = t('character.whenUnderSeconds');
   lastWrap.append(lastText, lastInput, lastUnit);
 
   burstRow.append(burstSelect, everyWrap, lastWrap);
@@ -672,26 +744,22 @@ export function renderCharacterSettings(
 
   const burstNote = document.createElement('p');
   burstNote.className = 'field-note';
-  burstNote.textContent =
-    '같은 버스트 단계 후보가 여럿일 때 누가 먼저 쓰는지를 정합니다(쿨타임 한도 내).'
-    + ' «n의 배수»는 그 사이클마다 우선 사용하고(n=1이면 매 사이클),'
-    + ' «막바지 최우선»은 전투가 그만큼 남았을 때부터 누구보다 먼저 씁니다 — 그 전에는 평소 순서입니다.'
-    + ' «안 씀»은 이 캐릭터가 버스트를 아예 쓰지 않습니다 — 같은 단계 동료가 전부 쿨이어도 나가지 않으므로,'
-    + ' 그 단계를 맡을 동료가 없으면 버스트 사이클 자체가 멈춥니다.';
-  burstEditor.append(burstHeading, burstRow, foldedNote('버스트 운용 설명', burstNote, 'burst'));
+  burstNote.textContent = t('character.burstUsageNote');
+  burstEditor.append(burstHeading, burstRow,
+    foldedNote(t('character.burstUsageHelp'), burstNote, 'burst'));
   // `body`가 아니라 아래 «컨트롤 · 버스트» 접이판에 넣는다 — 버스트 운용도 결국
   // 조작 방식이라 컨트롤과 한자리에 있는 편이 찾기 쉽다.
 
   const equipEditor = document.createElement('section');
   equipEditor.className = 'equip-editor';
   const equipHeading = document.createElement('h4');
-  equipHeading.textContent = '장비 레벨';
+  equipHeading.textContent = t('character.equipmentLevel');
   const equipGrid = document.createElement('div');
   equipGrid.className = 'equip-grid';
   for (const part of EQUIP_PARTS) {
     const partLabel = document.createElement('label');
     const partText = document.createElement('span');
-    partText.textContent = EQUIP_PART_LABELS[part];
+    partText.textContent = equipPartLabel(part);
     const partSelect = document.createElement('select');
     partSelect.dataset.equipLevel = part;
     // 장비는 세 갈래다 — 미장착 / 일반 T1~T9(강화 없음) / 오버로드 강화 0~5.
@@ -709,14 +777,16 @@ export function renderCharacterSettings(
     // 실전에서 쓰는 것만 남긴다 — 일반 T1~T9는 골라 봐야 쓸 일이 없어 아예 뺐다.
     // 강화 0단계는 「T9 기업」이 아니라 인게임 표기대로 「오버로드 0강」으로 적는다:
     // 계산도 그쪽(오버로드 강화 0)으로 하고 있었으므로 이름이 계산을 따라간 것이다.
-    addOption('없음', '미장착');
-    addOption('0', '오버로드 0강');
-    for (let lv = 1; lv <= 5; lv += 1) addOption(String(lv), `오버로드 ${lv}강`);
+    addOption('없음', t('character.unequipped'));
+    addOption('0', t('character.overloadEnhancement', { level: 0 }));
+    for (let lv = 1; lv <= 5; lv += 1) {
+      addOption(String(lv), t('character.overloadEnhancement', { level: lv }));
+    }
     const currentEquip = String(current.equipLevels?.[part] ?? 5);
     // 옛 설정이나 계정 가져오기가 일반 T1~T9를 가리키면 그 값도 목록에 남겨 둔다 —
     // 조용히 바뀌면 안 된다. 계산은 그대로 일반 장비 표로 한다.
     if (![...partSelect.options].some((option) => option.value === currentEquip)) {
-      addOption(currentEquip, `${currentEquip} (옛 설정)`);
+      addOption(currentEquip, t('character.legacySetting', { value: currentEquip }));
     }
     partSelect.value = currentEquip;
     partSelect.addEventListener('change', () => {
@@ -733,9 +803,7 @@ export function renderCharacterSettings(
   }
   const equipNote = document.createElement('p');
   equipNote.className = 'field-note';
-  equipNote.textContent = '부위별 장비 · 미장착 / 오버로드 0~5강. '
-    + '오버로드 «옵션»(우코·공증 등)과는 별개인 장비 기본 스탯입니다. '
-    + '오버로드 0강 이하(T9 기업 포함)는 전부 오버로드 0강으로 계산합니다.';
+  equipNote.textContent = t('character.equipmentNote');
   equipEditor.append(equipHeading, equipGrid, equipNote);
   body.append(equipEditor);
 
@@ -744,14 +812,18 @@ export function renderCharacterSettings(
   const collectionEditor = document.createElement('section');
   collectionEditor.className = 'collection-editor';
   const collectionHeading = document.createElement('h4');
-  collectionHeading.textContent = defaults.favoriteItem ? '소장품 · 애장품' : '소장품';
+  collectionHeading.textContent = defaults.favoriteItem
+    ? t('character.collectionAndFavorite')
+    : t('character.collection');
   const collectionSelect = document.createElement('select');
   collectionSelect.dataset.collection = '';
   const collectionOptions: Array<{ value: string; label: string }> = [
     ...(defaults.favoriteItem
       ? [3, 2, 1].map((stage) => ({
         value: `favorite:${stage}`,
-        label: `애장품 ${'★'.repeat(stage)}${'☆'.repeat(3 - stage)}`,
+        label: t('character.favoriteStage', {
+          stars: `${'★'.repeat(stage)}${'☆'.repeat(3 - stage)}`,
+        }),
       }))
       : []),
     ...catalog.collectionStages.map((stage) => ({ value: `stage:${stage}`, label: stage })),
@@ -776,8 +848,10 @@ export function renderCharacterSettings(
   const collectionNote = document.createElement('p');
   collectionNote.className = 'field-note';
   collectionNote.textContent = defaults.favoriteItem
-    ? `${defaults.favoriteItem.name} 보유 시 애장품을, 아니면 실제 낀 소장품 단계를 고르세요. 애장품은 소장품 슬롯을 씁니다.`
-    : '실제로 장착한 소장품 등급·레벨입니다. 안 꼈으면 «없음»을 고르세요.';
+    ? t('character.favoriteNote', {
+      item: displayFavoriteItemName(defaults.favoriteItem.name),
+    })
+    : t('character.collectionNote');
   collectionEditor.append(collectionHeading, collectionSelect, collectionNote);
   body.append(collectionEditor);
 
@@ -790,7 +864,7 @@ export function renderCharacterSettings(
     const editor = document.createElement('section');
     editor.className = 'overload-lines';
     const heading = document.createElement('h4');
-    heading.textContent = '오버로드 옵션';
+    heading.textContent = t('character.overloadOptions');
     editor.append(heading);
 
     /** 줄 하나를 바꾸면 합계를 다시 세어 함께 저장한다. */
@@ -814,7 +888,7 @@ export function renderCharacterSettings(
       card.dataset.overloadPart = part;
       const head = document.createElement('div');
       head.className = 'ol-part-head';
-      head.append(textSpan(EQUIP_PART_LABELS[part], 'ol-part-name'));
+      head.append(textSpan(equipPartLabel(part), 'ol-part-name'));
       const sum = textSpan('', 'ol-part-sum');
       head.append(sum);
       card.append(head);
@@ -826,16 +900,18 @@ export function renderCharacterSettings(
 
         const optionPick = document.createElement('select');
         optionPick.dataset.overloadOption = `${part}:${index}`;
-        optionPick.setAttribute('aria-label', `${EQUIP_PART_LABELS[part]} ${index + 1}번째 옵션`);
+        optionPick.setAttribute('aria-label', t('character.optionAria', {
+          part: equipPartLabel(part), index: index + 1,
+        }));
         const none = document.createElement('option');
         none.value = '';
-        none.textContent = '— 비어 있음';
+        none.textContent = t('character.emptyOption');
         optionPick.append(none);
-        for (const [key, meta] of Object.entries(catalog.overloadFields)) {
+        for (const key of Object.keys(catalog.overloadFields)) {
           if (!steps[key]) continue;
           const option = document.createElement('option');
           option.value = key;
-          option.textContent = meta.label;
+          option.textContent = statLabel(key, catalog.overloadFields[key]!.label);
           optionPick.append(option);
         }
         optionPick.value = line.option;
@@ -847,7 +923,9 @@ export function renderCharacterSettings(
         const levelPick = document.createElement('select');
         levelPick.className = 'ol-level';
         levelPick.dataset.overloadLevel = `${part}:${index}`;
-        levelPick.setAttribute('aria-label', `${EQUIP_PART_LABELS[part]} ${index + 1}번째 레벨`);
+        levelPick.setAttribute('aria-label', t('character.levelAria', {
+          part: equipPartLabel(part), index: index + 1,
+        }));
         const table = steps[line.option] ?? [];
         for (let level = 1; level <= (table.length || 15); level += 1) {
           const option = document.createElement('option');
@@ -870,7 +948,9 @@ export function renderCharacterSettings(
         row.append(optionPick, levelPick, shown);
         card.append(row);
       });
-      sum.textContent = partTotal > 0 ? `합 ${numberText(partTotal)}` : '빈 부위';
+      sum.textContent = partTotal > 0
+        ? t('character.partSum', { value: numberText(partTotal) })
+        : t('character.emptyPart');
       editor.append(card);
     }
     body.append(editor);
@@ -881,7 +961,7 @@ export function renderCharacterSettings(
   for (const [key, meta] of Object.entries(catalog.overloadFields)) {
     const label = document.createElement('label');
     const text = document.createElement('span');
-    text.textContent = meta.label;
+    text.textContent = statLabel(key, meta.label);
     const input = document.createElement('input');
     input.type = 'number';
     input.step = '0.01';
@@ -899,7 +979,7 @@ export function renderCharacterSettings(
   }
   const chargeOptionNote = document.createElement('p');
   chargeOptionNote.className = 'field-note';
-  chargeOptionNote.textContent = '차지형 무기가 아니면 차지 옵션은 효과가 없습니다.';
+  chargeOptionNote.textContent = t('character.chargeOptionNote');
 
   if (steps) {
     // 직접 입력은 남긴다 — 남의 스펙을 그대로 받아 적거나, 줄로 만들 수 없는 값을
@@ -910,11 +990,10 @@ export function renderCharacterSettings(
     manual.dataset.overloadManual = '';
     manual.open = previous<HTMLDetailsElement>('[data-overload-manual]')?.open ?? false;
     const head = document.createElement('summary');
-    head.textContent = '합계를 직접 입력';
+    head.textContent = t('character.manualTotal');
     const warn = document.createElement('p');
     warn.className = 'field-note warning';
-    warn.textContent = '직접 적은 값은 위 3줄과 어긋날 수 있고, 그때는 전투력이 나오지 않습니다 '
-      + '— 인게임 전투력은 옵션 단계를 세는데 손으로 적은 합계는 단계로 떨어지지 않을 수 있습니다.';
+    warn.textContent = t('character.manualTotalWarning');
     manual.append(head, warn, overloadGrid, chargeOptionNote);
     body.append(manual);
   } else {
@@ -924,7 +1003,7 @@ export function renderCharacterSettings(
   const cubeBox = document.createElement('section');
   cubeBox.className = 'cube-editor';
   const cubeHeading = document.createElement('h4');
-  cubeHeading.textContent = '하모니 큐브';
+  cubeHeading.textContent = t('character.harmonyCube');
   const cubeControls = document.createElement('div');
   cubeControls.className = 'cube-controls';
   const cubeSelect = document.createElement('select');
@@ -934,12 +1013,12 @@ export function renderCharacterSettings(
   // (미란다 버프 등)을 재려면 안 낀 상태도 고를 수 있어야 한다.
   const noneOption = document.createElement('option');
   noneOption.value = NO_CUBE;
-  noneOption.textContent = '없음 (큐브 미착용)';
+  noneOption.textContent = t('character.cubeUnequipped');
   cubeSelect.append(noneOption);
   for (const cubeName of Object.keys(catalog.cubes)) {
     const option = document.createElement('option');
     option.value = cubeName;
-    option.textContent = cubeName;
+    option.textContent = cubeMetaLabel(cubeName, catalog);
     cubeSelect.append(option);
   }
   // 저장된 편성이 지금 카탈로그에 없는 큐브를 가리킬 수 있다(데이터 갱신·구버전 상태).
@@ -986,11 +1065,18 @@ export function renderCharacterSettings(
   const cubeSummary = document.createElement('p');
   cubeSummary.className = 'cube-summary';
   if (noCube) {
-    cubeSummary.textContent = '큐브를 끼지 않습니다 — 큐브의 스탯도, 우월 코드 효과도 붙지 않습니다.';
+    cubeSummary.textContent = t('character.noCubeNote');
   } else if (level) {
     const effect = cubeMeta.template.replace('{0}', String(level.effect));
-    cubeSummary.textContent = `공격 ${level.atk.toLocaleString('en-US')} · 방어 ${level.def.toLocaleString('en-US')} · `
-      + `체력 ${level.hp.toLocaleString('en-US')} · ${effect} · 우월 코드 ${level.commonElement}%`;
+    cubeSummary.textContent = t('character.cubeSummary', {
+      attack: formatNumber(level.atk),
+      defense: formatNumber(level.def),
+      hp: formatNumber(level.hp),
+      effect: getLocale() === 'zh-TW'
+        ? `${statName(cubeMeta.stat)} +${level.effect}${cubeMeta.template.includes('%') ? '%' : ''}`
+        : effect,
+      element: level.commonElement,
+    });
   }
   cubeBox.append(cubeHeading, cubeControls, cubeSummary);
   // 고유 스킬이 계산에 안 들어가는 큐브는 그 사실을 숨기지 않는다. 스탯은 붙으므로
@@ -999,8 +1085,7 @@ export function renderCharacterSettings(
     const note = document.createElement('p');
     note.className = 'cube-unsupported-note';
     note.dataset.cubeUnsupported = '';
-    note.textContent = `이 큐브의 고유 효과는 아직 계산에 반영되지 않습니다 — `
-      + `공격력·방어력·체력과 우월 코드 효과만 적용됩니다. (${cubeMeta.unsupported})`;
+    note.textContent = t('character.cubeUnsupported', { detail: cubeMeta.unsupported });
     cubeBox.append(note);
   }
   body.append(cubeBox);
@@ -1011,8 +1096,8 @@ export function renderCharacterSettings(
   controlMode.className = 'control-mode';
   const isAutomatic = current.control === undefined;
   for (const [mode, labelText] of [
-    ['auto', '추천 자동 적용'],
-    ['manual', '직접 설정'],
+    ['auto', t('character.applyRecommended')],
+    ['manual', t('character.manualSettings')],
   ] as const) {
     const label = document.createElement('label');
     const radio = document.createElement('input');
@@ -1085,7 +1170,7 @@ export function renderCharacterSettings(
   };
 
   if (defaults.weaponType === 'SR' || defaults.weaponType === 'RL') {
-    const tapLabel = addControlToggle('tap_fire', '톡톡이', { rate: TAP_FIRE_DEFAULT, release: 0.03 });
+    const tapLabel = addControlToggle('tap_fire', t('character.tapFire'), { rate: TAP_FIRE_DEFAULT, release: 0.03 });
     // 발사 속도는 사람마다 다르다. 커뮤니티는 10초당 발수(«N톡톡이»)로 부르므로
     // 입력은 발/초로 받되 환산값을 같이 보여준다.
     const tapRate = document.createElement('input');
@@ -1102,8 +1187,8 @@ export function renderCharacterSettings(
     const paintHint = (rate: number) => {
       if (!Number.isFinite(rate) || rate <= 0) { tapHint.textContent = ''; return; }
       // 10초에 N발이면 사이클은 10/(N-1)초다 (CONTROL.md §톡톡이).
-      tapHint.textContent = `≈ ${Math.round(rate * 10)}톡톡이`
-        + (rate > TAP_FIRE_HARD_LIMIT ? ' · 게임 하한(220ms)을 넘는 값입니다' : '');
+      tapHint.textContent = t('character.tapHint', { count: Math.round(rate * 10) })
+        + (rate > TAP_FIRE_HARD_LIMIT ? ` · ${t('character.tapLimitWarning')}` : '');
       tapHint.classList.toggle('is-warning', rate > TAP_FIRE_HARD_LIMIT);
     };
     paintHint(Number(tapRate.value));
@@ -1115,15 +1200,15 @@ export function renderCharacterSettings(
       next.control = { ...(next.control ?? {}), tap_fire: { rate, release: 0.03 } };
       emitNumericChange(next);
     });
-    tapLabel.append(makeInputUnit(tapRate, '발/초'), tapHint);
-    const holdLabel = addControlToggle('hold', '홀드 컨트롤', {
+    tapLabel.append(makeInputUnit(tapRate, t('character.shotsPerSecond')), tapHint);
+    const holdLabel = addControlToggle('hold', t('character.holdControl'), {
       policy: 'own_full_burst', lead: 0.5,
     });
     const holdPolicy = document.createElement('select');
     holdPolicy.dataset.controlPolicy = 'hold';
     for (const [policy, text] of [
-      ['own_full_burst', '본인 풀버스트 홀드'],
-      ['charge_hold_after_fb', '풀버스트 후 홀드'],
+      ['own_full_burst', t('character.ownFullBurstHold')],
+      ['charge_hold_after_fb', t('character.afterFullBurstHold')],
     ] as const) {
       const option = document.createElement('option');
       option.value = policy;
@@ -1141,14 +1226,14 @@ export function renderCharacterSettings(
     holdLabel.append(holdPolicy);
   }
 
-  const reloadLabel = addControlToggle('reload', '재장전 컨트롤', {
+  const reloadLabel = addControlToggle('reload', t('character.reloadControl'), {
     policy: 'before_fb_end', lead: 0.3,
   });
   const reloadPolicy = document.createElement('select');
   reloadPolicy.dataset.controlPolicy = 'reload';
   for (const [policy, text] of [
-    ['before_fb_end', '풀버스트 종료 전'],
-    ['into_fb', '풀버스트 진입 맞춤'],
+    ['before_fb_end', t('character.beforeFullBurstEnd')],
+    ['into_fb', t('character.matchFullBurstStart')],
   ] as const) {
     const option = document.createElement('option');
     option.value = policy;
@@ -1163,7 +1248,7 @@ export function renderCharacterSettings(
       : { policy: 'into_fb', margin: 0.1 });
   });
   reloadLabel.append(reloadPolicy);
-  addControlToggle('cover', '버스트 엄폐 컨트롤', { policy: 'own_full_burst' });
+  addControlToggle('cover', t('character.coverControl'), { policy: 'own_full_burst' });
 
   if (name === '신데렐라 : 크리스탈 웨이브') {
     const modeLabel = document.createElement('label');
@@ -1195,16 +1280,16 @@ export function renderCharacterSettings(
     });
     modeLabel.append(
       modeCheckbox,
-      document.createTextNode('저격 모드로 변경 · 전투 시작 '),
-      makeInputUnit(modeDelay, '초'),
-      document.createTextNode('후부터 전환 시도'),
+      document.createTextNode(t('character.sniperModeStart')),
+      makeInputUnit(modeDelay, t('common.seconds')),
+      document.createTextNode(t('character.sniperModeEnd')),
     );
     controlGrid.append(modeLabel);
   }
 
   const controlWarning = document.createElement('p');
   controlWarning.className = 'field-note warning';
-  controlWarning.textContent = '여러 캐릭터 동시 컨트롤은 실제 한 명 조작보다 유리한 상한일 수 있습니다.';
+  controlWarning.textContent = t('character.controlWarning');
   // 컨트롤은 창으로 띄우지 않고 **카드에서 그 자리에 펼친다**. 창을 열면 편성이
   // 가려지는데, 컨트롤은 옆 사람 것을 보며 정하는 설정이라 그 대가가 크다.
   // 대신 접힌 칩에 지금 상태를 적어 두어, 열지 않고도 읽히게 한다.
@@ -1221,7 +1306,7 @@ export function renderCharacterSettings(
   chipText.className = 'control-chip-text';
   paintControlChip = () => {
     chipText.textContent = controlChipText(current);
-    chipText.title = `컨트롤 · 버스트 — ${chipText.textContent}`;
+    chipText.title = t('character.controlBurstTitle', { summary: chipText.textContent });
   };
   paintControlChip();
   const chipCaret = document.createElement('span');
@@ -1234,7 +1319,7 @@ export function renderCharacterSettings(
   controlPanel.dataset.controlPanel = '';
   controlPanel.hidden = !controlWasOpen;
   controlPanel.append(controlMode, recommendation, ruleNotes, controlGrid,
-    foldedNote('동시 컨트롤 주의', controlWarning, 'control-warning'), burstEditor);
+    foldedNote(t('character.controlWarningHeading'), controlWarning, 'control-warning'), burstEditor);
   controlChip.addEventListener('click', () => {
     const next = controlChip.getAttribute('aria-expanded') !== 'true';
     controlChip.setAttribute('aria-expanded', String(next));
@@ -1252,7 +1337,7 @@ export function renderCharacterSettings(
   advancedToggle.checked = advancedWasOpen;
   advancedToggle.dataset.advancedToggle = '';
   const advancedText = document.createElement('span');
-  advancedText.textContent = '고급 모드';
+  advancedText.textContent = t('character.advancedMode');
   advancedLabel.append(advancedToggle, advancedText);
   body.append(advancedLabel);
 
@@ -1263,7 +1348,7 @@ export function renderCharacterSettings(
   picker.className = 'advanced-picker';
   const search = document.createElement('input');
   search.type = 'search';
-  search.placeholder = '추가 수치 검색';
+  search.placeholder = t('character.searchStats');
   search.dataset.manualSearch = '';
   // 하나 추가했다고 검색어까지 지우면 둘째 줄부터 매번 다시 쳐야 한다.
   search.value = searchWas;
@@ -1272,16 +1357,17 @@ export function renderCharacterSettings(
   const add = document.createElement('button');
   add.type = 'button';
   add.dataset.addStat = '';
-  add.textContent = '수치 추가';
+  add.textContent = t('character.addStat');
   const renderManualOptions = () => {
-    const query = search.value.trim().toLocaleLowerCase('ko');
+    const query = search.value.trim().toLocaleLowerCase(getLocale());
     manualSelect.replaceChildren();
-    for (const [key, meta] of Object.entries(catalog.manualStats)) {
+    for (const key of Object.keys(catalog.manualStats)) {
       if (key in current.manualStats!) continue;
-      if (query && !meta.label.toLocaleLowerCase('ko').includes(query) && !key.includes(query)) continue;
+      const label = statLabel(key, catalog.manualStats[key]!.label);
+      if (query && !label.toLocaleLowerCase(getLocale()).includes(query) && !key.includes(query)) continue;
       const option = document.createElement('option');
       option.value = key;
-      option.textContent = meta.label;
+      option.textContent = label;
       manualSelect.append(option);
     }
     add.disabled = manualSelect.options.length === 0;
@@ -1307,7 +1393,7 @@ export function renderCharacterSettings(
     row.className = 'manual-row';
     row.dataset.manualRow = key;
     const text = document.createElement('span');
-    text.textContent = meta.label;
+    text.textContent = statLabel(key, meta.label);
     const input = document.createElement('input');
     input.type = 'number';
     input.step = '0.01';
@@ -1323,7 +1409,7 @@ export function renderCharacterSettings(
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.dataset.removeStat = key;
-    remove.textContent = '삭제';
+    remove.textContent = t('common.delete');
     remove.addEventListener('click', () => {
       const next = cloneOverrides(current);
       delete next.manualStats![key];
@@ -1337,7 +1423,8 @@ export function renderCharacterSettings(
     advanced.hidden = !advancedToggle.checked;
   });
   body.append(advanced);
-  const bodyFold = panelOpener('돌파 · 스킬 · 오버로드 · 큐브', 'settings', '수치 설정');
+  const bodyFold = panelOpener(
+    t('character.settingsPanelTitle'), 'settings', t('character.settingsPanelShort'));
   if (restore) {
     // 손으로 만진 값을 불러온 프로필로 되돌린다. **두 번 눌러야 적용된다** —
     // 한 번에 나가면 잘못 눌러 만져 둔 값을 통째로 잃고, 되돌릴 길이 없다
@@ -1353,12 +1440,12 @@ export function renderCharacterSettings(
     // `emitNumericChange`가 일부러 다시 그리지 않으므로(입력 중 포커스를 잃지 않으려고)
     // 손을 대도 단추가 꺼진 채로 남는다. 늘 누를 수 있게 두는 편이 낫다 — 같은 값을
     // 다시 넣는 것은 아무 해가 없다.
-    button.title = '손으로 만진 값을 불러온 그대로 되돌립니다. 한 번 더 누르면 적용됩니다';
+    button.title = t('character.restoreTitle');
     let armed = false;
     button.addEventListener('click', () => {
       if (!armed) {
         armed = true;
-        button.textContent = '정말 되돌립니다';
+        button.textContent = t('character.restoreConfirm');
         button.classList.add('is-armed');
         return;
       }

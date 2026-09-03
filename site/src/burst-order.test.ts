@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it } from 'vitest';
 import {
   candidatesFor, cycleLine, cyclesFromTimeline, estimateCycles, picksFrom,
@@ -5,6 +7,7 @@ import {
   type BurstSequence,
 } from './burst-order';
 import type { BattleTimeline, CharacterMeta } from './types';
+import { setLocale } from './i18n';
 
 const meta = (name: string, burstStage: string): CharacterMeta => ({
   name, burstStage, elementCode: '전격', weaponType: 'AR', className: '화력형',
@@ -159,5 +162,12 @@ describe('한 줄 요약', () => {
   it('빈 사이클은 「자동」이라 적는다', () => {
     expect(cycleLine({ 1: [], 2: [], 3: [] })).toBe('자동');
     expect(cycleLine(undefined)).toBe('자동');
+  });
+
+  it('zh-TW에서는 단계와 캐릭터 표시 이름을 현지화한다', () => {
+    setLocale('zh-TW');
+    expect(cycleLine({ 1: ['리타'], 2: ['크라운'], 3: [] }))
+      .toBe('爆裂階段 1 麗塔 → 爆裂階段 2 皇冠');
+    setLocale('ko');
   });
 });

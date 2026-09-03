@@ -124,3 +124,20 @@ describe('별칭 검색', () => {
     expect(rankOf('세이렌', buildIndex(meta('크라운')))).toBe(NO_MATCH);
   });
 });
+
+describe('localized display-name search', () => {
+  it('finds a Korean-keyed character by its optional Chinese display name', () => {
+    const rapi = meta('라피 : 레드 후드');
+    const index = buildIndex(rapi, '拉毗：小紅帽');
+
+    expect(rankOf('小紅帽', index)).toBe(2);
+    expect(filterByQuery([rapi], '拉毗', () => index).map((char) => char.name))
+      .toEqual(['라피 : 레드 후드']);
+  });
+
+  it('continues to search the canonical Korean name when a display name is supplied', () => {
+    const rapi = buildIndex(meta('라피'), '拉毗');
+    expect(rankOf('라피', rapi)).toBe(0);
+    expect(rankOf('拉毗', rapi)).toBe(0);
+  });
+});

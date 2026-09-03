@@ -9,16 +9,17 @@
  */
 
 import type { CharacterOverrides } from './types';
+import { displayCharacterName, t } from './i18n';
 
 /** 무엇을 기준으로 크기를 매길지. */
 export type VisionMetric = 'element' | 'element_atk';
 
 export const VISION_METRICS: Array<{ key: VisionMetric; label: string; hint: string }> = [
-  { key: 'element', label: '우월 코드', hint: '오버로드 「우월 코드 대미지」 합계' },
+  { key: 'element', label: 'fun.metricElement', hint: 'fun.metricElementHint' },
   {
     key: 'element_atk',
-    label: '우월 코드 + 공격력',
-    hint: '「우월 코드 대미지」와 「공격력」 합계를 더한 값',
+    label: 'fun.metricCombined',
+    hint: 'fun.metricCombinedHint',
   },
 ];
 
@@ -157,11 +158,17 @@ export const packBounds = (circles: PackedCircle[]): { width: number; height: nu
 /** 화면 위쪽에 적는 한 줄. 몇 명이 얼마나 되는지. */
 export function visionSummary(rows: VisionRow[], metric: VisionMetric): string {
   if (rows.length === 0) return '';
-  const label = VISION_METRICS.find((entry) => entry.key === metric)?.label ?? '';
+  const label = t(metric === 'element' ? 'fun.metricElement' : 'fun.metricCombined');
   const total = rows.reduce((sum, row) => sum + row.value, 0);
   // 꼬리 0은 턴다. 「.0+$」로 한 번에 자르면 정수부의 0까지 먹으므로(1200 → 12)
   // 소수부만 집어 자른다.
   const digits = (value: number) =>
     value.toFixed(2).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
-  return `${rows.length}명 · ${label} 합계 ${digits(total)}% · 1등 ${rows[0]!.name} ${digits(rows[0]!.value)}%`;
+  return t('fun.summary', {
+    count: rows.length,
+    metric: label,
+    total: digits(total),
+    name: displayCharacterName(rows[0]!.name),
+    value: digits(rows[0]!.value),
+  });
 }

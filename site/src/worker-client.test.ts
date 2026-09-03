@@ -1,9 +1,12 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it } from 'vitest';
 
 import {
   CalculatorPool, CalculatorWorkerClient, defaultPoolSize, MAX_POOL, type WorkerLike,
 } from './worker-client';
 import type { SimulationRequest, SimulationResult, WorkerResponse } from './types';
+import { setLocale } from './i18n';
 
 const request: SimulationRequest = {
   squad: ['리타'],
@@ -83,6 +86,16 @@ describe('CalculatorWorkerClient', () => {
 
     expect(worker.terminated).toBe(true);
     await expect(pending).rejects.toThrow('계산기가 종료되었습니다.');
+  });
+
+  it('uses a localized fallback error for zh-TW', async () => {
+    setLocale('zh-TW');
+    const worker = new FakeWorker();
+    const client = new CalculatorWorkerClient(() => worker);
+    const pending = client.simulate(request);
+    worker.respond({ id: worker.messages[0]!.id, type: 'error' });
+    await expect(pending).rejects.toThrow('計算失敗。');
+    setLocale('ko');
   });
 });
 

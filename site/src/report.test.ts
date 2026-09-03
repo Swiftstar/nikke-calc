@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { copyImage, loadPortraits, renderReport, reportFilename, reportRows, type ReportMeta } from './report';
+import { setLocale } from './i18n';
 import type { BatchResult, DeckResultEntry, SimulationRequest, SimulationResult } from './types';
 
 const request = (squad: string[]): SimulationRequest => ({
@@ -76,6 +77,37 @@ describe('report image', () => {
 
     expect(reportFilename(single)).toMatch(/^nikke-squad-\d{8}-\d{4}\.png$/);
     expect(reportFilename(five)).toMatch(/^nikke-5deck-\d{8}-\d{4}\.png$/);
+  });
+
+  it('localizes report filenames for zh-TW', () => {
+    setLocale('zh-TW');
+    expect(reportFilename(batchOf([entry(1, ['리타'], 100)])))
+      .toMatch(/^nikke-隊伍-\d{8}-\d{4}\.png$/);
+    expect(reportFilename(batchOf([1, 2].map((id) => entry(id, ['리타'], 100)))))
+      .toMatch(/^nikke-2隊-\d{8}-\d{4}\.png$/);
+    setLocale('ko');
+  });
+
+  it('draws localized labels and character display names on the zh-TW canvas', () => {
+    setLocale('zh-TW');
+    const written: string[] = [];
+    const noop = () => undefined;
+    const context = {
+      arcTo: noop, beginPath: noop, clip: noop, closePath: noop, drawImage: noop,
+      fillRect: noop, lineTo: noop, moveTo: noop, restore: noop, save: noop,
+      scale: noop, stroke: noop, strokeRect: noop,
+      fillText: (value: string) => written.push(value),
+      measureText: (value: string) => ({ width: value.length * 7 }),
+    } as unknown as CanvasRenderingContext2D;
+    const createCanvas = () => ({
+      width: 0, height: 0, getContext: () => context,
+    }) as unknown as HTMLCanvasElement;
+
+    renderReport(batchOf([entry(1, ['리타'], 100)]), meta, new Map(), createCanvas);
+    expect(written).toContain('隊伍總傷害');
+    expect(written).toContain('麗塔');
+    expect(written).not.toContain('스쿼드 총 대미지');
+    setLocale('ko');
   });
 
   it('reports a readable error when the browser has no 2D canvas', () => {

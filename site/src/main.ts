@@ -9,6 +9,16 @@ initializeLocale();
 document.title = t('meta.title');
 document.querySelector<HTMLMetaElement>('meta[name="description"]')
   ?.setAttribute('content', t('meta.description'));
+document.querySelector<HTMLMetaElement>('meta[property="og:locale"]')
+  ?.setAttribute('content', document.documentElement.lang === 'zh-TW' ? 'zh_TW' : 'ko_KR');
+document.querySelector<HTMLMetaElement>('meta[property="og:title"]')
+  ?.setAttribute('content', t('meta.title'));
+document.querySelector<HTMLMetaElement>('meta[property="og:description"]')
+  ?.setAttribute('content', t('meta.ogDescription'));
+document.querySelector<HTMLMetaElement>('meta[name="twitter:title"]')
+  ?.setAttribute('content', t('meta.title'));
+document.querySelector<HTMLMetaElement>('meta[name="twitter:description"]')
+  ?.setAttribute('content', t('meta.twitterDescription'));
 
 const rootCandidate = document.querySelector<HTMLElement>('#app');
 if (!rootCandidate) throw new Error(t('app.missingRoot'));
