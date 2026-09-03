@@ -34,7 +34,7 @@ describe.each([
     customError: '內容不是 JSON 格式',
     shareError: '請輸入分享代碼。',
     prompt: '處理中意見 0 項',
-    vision: '1 人 · 優越屬性總和 88.6% · 第 1 名 拉毗 88.6%',
+    vision: '1 人 · 優越代碼總和 88.6% · 第 1 名 拉毗 88.6%',
   },
 ])('$locale production strings', ({
   locale, ago, duration, eok, squad, customError, shareError, prompt, vision,
