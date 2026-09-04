@@ -1,5 +1,7 @@
 # NIKKE 스쿼드 계산기
 
+[한국어](README.md) · [繁體中文](README.zh-TW.md)
+
 기존 Python 시뮬레이션 엔진을 웹 브라우저 안에서 실행하는 정적 스쿼드 대미지 계산기입니다.
 
 서비스: <https://swiftstar.github.io/nikke-calc/>
