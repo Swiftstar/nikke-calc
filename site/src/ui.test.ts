@@ -806,7 +806,7 @@ describe('calculator UI', () => {
     expect(button?.hidden).toBe(true);
   });
 
-  it('블라블라링크 연동 창은 자동을 기본값으로 공식 서버 다섯 곳을 보여 준다', () => {
+  it('블라블라링크 연동 창은 자동을 기본값으로 공식 서버를 보여 준다', () => {
     mountCalculator(root, {
       catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage,
       blablaProxy: 'https://proxy.example',
@@ -824,6 +824,7 @@ describe('calculator UI', () => {
       ['84', '글로벌'],
       ['82', '북미'],
       ['85', '동남아'],
+      ['91', '홍콩·대만'],
     ]);
   });
 

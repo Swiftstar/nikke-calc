@@ -14,6 +14,7 @@ export const BLABLA_SERVERS = [
   { area: 84, label: '글로벌' },
   { area: 82, label: '북미' },
   { area: 85, label: '동남아' },
+  { area: 91, label: '홍콩·대만' },
 ] as const;
 
 export function blablaServerLabel(area: number): string {

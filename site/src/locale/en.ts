@@ -1288,6 +1288,9 @@ export const EN: Record<string, string> = {
   '글로벌': 'Global',
   '북미': 'North America',
   '동남아': 'SEA',
+  '홍콩·대만': 'HK/TW',
+  '블라블라링크 프록시에 닿지 못했습니다. 이 사이트 주소가 프록시에 허용돼 있는지 확인해 주세요.':
+    'Could not reach the Blablalink proxy. This site origin must be allowed on the proxy.',
   'enikk이 빈 응답을 돌려줬습니다.': 'enikk returned an empty response.',
   '시즌 목록이 비어 있습니다.': 'The season list is empty.',
   '시즌 정보를 확인하는 중…': 'Checking season info…',

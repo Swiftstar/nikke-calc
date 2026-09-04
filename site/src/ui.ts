@@ -5013,7 +5013,13 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
             ...(selectedArea === undefined ? {} : { area: selectedArea }),
           }),
         });
-        const payload = await response.json() as RawProfile & { error?: string };
+        const raw = await response.text();
+        let payload: RawProfile & { error?: string };
+        try {
+          payload = JSON.parse(raw) as RawProfile & { error?: string };
+        } catch {
+          throw new Error(`동기화에 실패했습니다 (${response.status}).`);
+        }
         if (!response.ok) throw new Error(payload.error ?? `동기화에 실패했습니다 (${response.status}).`);
 
         const area = pickArea(payload, selectedArea);
@@ -5059,7 +5065,10 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         updateRosterNote(parts.join(' · '));
         setStatus([`${serverLabel} 서버에서 ${matched.length}명을 불러왔습니다.`, ...notes].join(' '));
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        // 프록시가 이 오리진을 거절하면 CORS로 본문을 못 읽어 Failed to fetch가 된다.
+        const fallback = '블라블라링크 프록시에 닿지 못했습니다. 이 사이트 주소가 프록시에 허용돼 있는지 확인해 주세요.';
+        const raw = error instanceof Error ? error.message : String(error);
+        const message = /failed to fetch/i.test(raw) || error instanceof TypeError ? fallback : raw;
         setStatus(message);
         if (from) updateRosterNote(`블라블라링크 다시 받기 실패: ${message}`);
       } finally {
