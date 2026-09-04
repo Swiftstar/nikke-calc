@@ -741,6 +741,8 @@ input:hover, select:hover { border-color: rgba(69,214,208,.5); }
 .split-legend { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 0; font-size: 9px; line-height: 1.5; }
 .split-legend .legend-normal { color: var(--cyan); }
 .split-legend .legend-skill { color: var(--amber); }
+/* 코어 명중률은 딜 분해가 아니라 «어떻게 맞혔나»라 색을 빌리지 않고 흐리게 둔다. */
+.dmg-split .legend-core { color: #7e91a2; }
 .skill-breakdown { margin-top: 6px; }
 .skill-breakdown summary { color: #7e91a2; font-size: 9px; cursor: pointer; }
 .skill-breakdown ul { margin: 6px 0 0; padding: 0; list-style: none; }
@@ -789,7 +791,7 @@ input:hover, select:hover { border-color: rgba(69,214,208,.5); }
 .result-card small { display: block; color: var(--cyan); font: 600 10px ui-monospace, monospace; }
 .result-card .share-track { margin-top: 8px; }
 .result-card .dmg-split { margin-top: 8px; }
-.result-card .dmg-split > summary { display: flex; gap: 8px; cursor: pointer;
+.result-card .dmg-split > summary { display: flex; flex-wrap: wrap; gap: 8px; cursor: pointer;
   font: 700 9.5px ui-monospace, monospace; }
 .result-card .split-legend { display: grid; gap: 2px; margin: 6px 0 0; }
 .result-card .skill-breakdown { display: grid; gap: 3px; margin: 8px 0 0; padding: 0; list-style: none; }
@@ -1640,6 +1642,16 @@ button.roster-cell.is-taken { opacity: .35; cursor: not-allowed; }
 .feedback-move:hover { border-color: rgba(69,214,208,.45); color: var(--ink); }
 .feedback-move.is-on { border-color: var(--cyan); background: rgba(69,214,208,.16); color: var(--cyan); }
 .feedback-move.is-danger:hover { border-color: var(--danger); color: #ffd7de; }
+/* 운영자 코멘트 — 글쓴이의 글에 답으로 붙는다. 한 칸 들여쓰고 왼쪽에 띠를 세워
+   «누가 쓴 글인지»를 색으로 먼저 읽게 한다. */
+.feedback-reply { margin-top: 9px; padding: 8px 10px; border-left: 2px solid var(--cyan);
+  border-radius: 0 6px 6px 0; background: rgba(69,214,208,.07); }
+.feedback-reply-head { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
+.feedback-reply-head b { color: var(--cyan); font-size: 10px; font-weight: 800; }
+.feedback-reply .feedback-text-line { color: #a9c7cb; font-size: 11.5px; }
+.feedback-reply-edit { margin-top: 8px; display: grid; gap: 6px; }
+.feedback-reply-edit .feedback-text { min-height: 0; }
+.feedback-reply-edit .feedback-actions { justify-content: flex-end; gap: 6px; }
 
 /* ══ 보스 메이커 ═══════════════════════════════════════════════════════════
    보스를 그려 놓고 그 위에서 전투를 읽는 화면. 무대(SVG) · 조건 판 · 타임라인 띠가

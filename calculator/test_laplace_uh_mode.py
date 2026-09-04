@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import unittest
 
+from calculator import timeline
 from calculator.timeline import simulate
 from context import spec as char_spec
 
@@ -52,6 +53,39 @@ class LaplaceUltimateHeroModeTest(unittest.TestCase):
         self.assertAlmostEqual(avg(up_charge) / avg(base_charge), 1.5, places=4)
         # SMG 모드는 이 항을 아예 안 탄다.
         self.assertAlmostEqual(avg(up_smg) / avg(base_smg), 1.0, places=9)
+
+    def test_the_mode_keeps_hitting_the_core(self):
+        """SMG 모드도 코어를 그대로 맞힌다 — 탄착군이 매우 좁기 때문이다.
+
+        코어 명중은 **지금 들고 있는 무기**의 탄착군으로 따지므로, 무기군 기본값을
+        그대로 쓰면 이 모드는 SMG 110px이 되어 코어 52px 명중률이 15%로 떨어진다.
+        그러면 코어를 켜고 꺼도 이 캐릭터만 딜이 거의 안 움직인다(피드백 2026-09-03).
+        실제로는 모드의 탄착군이 매우 좁아 **명중 100%로 본다**(유저 확인, 2026-09-04) —
+        실측은 `weapon_delays._weapon_change`에 적고 엔진은 명중률 하한으로 받는다.
+        """
+        squad = char_spec.build_squad([NAME], {})
+        result = simulate(squad, config={"duration": 12, "rng_mode": "expected"},
+                          enemy={"def": 31784, "code": "", "core_px": 52})
+        hits = sorted((h for h in result.hits if h.core_frac is not None), key=lambda h: h.t)
+        charge = [h for h in hits if h.t < _MODE_START - 0.01]
+        smg = [h for h in hits if _MODE_START + 0.01 < h.t < 10.0]
+        self.assertEqual([h.core_frac for h in charge], [1.0] * 5)
+        self.assertEqual([h.core_frac for h in smg], [1.0] * len(smg))
+
+    def test_the_narrow_spread_is_data_not_a_weapon_class_default(self):
+        """하한을 빼면 SMG 무기군 기본 탄착군으로 되돌아간다 — 값의 출처를 못 박는다."""
+        squad = char_spec.build_squad([NAME], {})
+        delays = timeline._DELAYS["_weapon_change"][NAME]["일렉트릭 파워 풀 풀 차지"]
+        floor = delays.pop("accuracy_pct")
+        try:
+            result = simulate(squad, config={"duration": 12, "rng_mode": "expected"},
+                              enemy={"def": 31784, "code": "", "core_px": 52})
+        finally:
+            delays["accuracy_pct"] = floor
+        smg = [h for h in result.hits
+               if h.core_frac is not None and _MODE_START + 0.01 < h.t < 10.0]
+        # SMG 탄착군 110px · 코어 52px → (26/55)^2.55 ≈ 0.148.
+        self.assertAlmostEqual(smg[0].core_frac, 0.148, places=3)
 
     def test_mode_fires_as_smg_and_ends_after_its_bullets(self):
         """모드 자체가 성립하는지도 함께 잡아 둔다 — 위 시험의 전제다."""

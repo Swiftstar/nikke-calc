@@ -334,6 +334,16 @@ function renderCharacterCards(
       const summary = document.createElement('summary');
       summary.append(createText('span', t('평타 {pct}%', { pct: normalPct.toFixed(0) }), 'legend-normal'));
       summary.append(createText('span', t('스킬 {pct}%', { pct: skillPct.toFixed(0) }), 'legend-skill'));
+      // 코어 명중률. 「코어를 켰는데 이 사람만 딜이 안 오른다」는 물음이 여기서 끝난다 —
+      // 무기군마다 탄착군이 다르고, 변신 모드는 **그 모드 무기**로 따지기 때문이다.
+      // 쏜 것이 없으면(스킬로만 때리는 판) 적을 것도 없다.
+      const shots = breakdown.shots ?? 0;
+      if (shots > 0) {
+        const corePct = (breakdown.coreShots ?? 0) / shots * 100;
+        const core = createText('span', t('코어 {pct}%', { pct: corePct.toFixed(0) }), 'legend-core');
+        core.title = t('쏜 탄 가운데 코어에 맞은 비율입니다. 무기군의 탄착군 크기와 코어 크기로 정해지며, 변신 모드에서는 그 모드의 무기로 따집니다. 스킬 대미지는 조준 판정이 없어 여기 들어가지 않습니다.');
+        summary.append(core);
+      }
       details.append(summary);
 
       const splitTrack = document.createElement('div');
@@ -5104,6 +5114,9 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     const ADMIN_KEY = 'nikke-feedback-admin';
 
     let feedbackItems: FeedbackItem[] = [];
+    // 지금 코멘트를 쓰고 있는 글. 목록은 통째로 다시 그려지므로 «어느 칸이 열려
+    // 있나»를 여기 적어 둔다.
+    let replyEditing: string | null = null;
     let adminPass = '';
     try {
       adminPass = sessionStorage.getItem(ADMIN_KEY) ?? '';
@@ -5143,6 +5156,20 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         // 여러 줄로 쓴 글은 줄 그대로 보인다 — 줄바꿈은 CSS가 살린다.
         row.append(createText('p', item.text, 'feedback-text-line'));
 
+        // 운영자 코멘트. 상태 딱지만으로는 «왜 그렇게 됐나»를 알 수 없다 — 재현이
+        // 안 되면 무엇이 더 필요한지, 안 고칠 것이면 왜 그런지가 여기 붙는다.
+        if (item.reply) {
+          const reply = document.createElement('div');
+          reply.className = 'feedback-reply';
+          reply.dataset.feedbackReply = item.id;
+          const who = document.createElement('div');
+          who.className = 'feedback-reply-head';
+          who.append(createText('b', '운영자'));
+          if (item.replyAt) who.append(createText('span', feedbackDate(item.replyAt), 'feedback-when'));
+          reply.append(who, createText('p', item.reply, 'feedback-text-line'));
+          row.append(reply);
+        }
+
         if (adminPass) {
           const tools = document.createElement('div');
           tools.className = 'feedback-tools';
@@ -5155,6 +5182,16 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
             move.addEventListener('click', () => { void moveFeedback(item, status); });
             tools.append(move);
           }
+          const comment = document.createElement('button');
+          comment.type = 'button';
+          comment.className = 'feedback-move';
+          comment.dataset.feedbackComment = item.id;
+          comment.textContent = item.reply ? '코멘트 고치기' : '코멘트';
+          comment.addEventListener('click', () => {
+            replyEditing = replyEditing === item.id ? null : item.id;
+            renderFeedback();
+          });
+          tools.append(comment);
           const remove = document.createElement('button');
           remove.type = 'button';
           remove.className = 'feedback-move is-danger';
@@ -5163,6 +5200,34 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
           remove.addEventListener('click', () => { void removeFeedback(item); });
           tools.append(remove);
           row.append(tools);
+
+          if (replyEditing === item.id) {
+            const box = document.createElement('div');
+            box.className = 'feedback-reply-edit';
+            const area = document.createElement('textarea');
+            area.className = 'feedback-text';
+            area.rows = 3;
+            area.maxLength = 1000;
+            area.value = item.reply ?? '';
+            area.dataset.feedbackReplyText = item.id;
+            area.placeholder = '글쓴이에게 남길 말 — 왜 그렇게 되는지, 무엇이 더 필요한지.';
+            const line = document.createElement('div');
+            line.className = 'feedback-actions';
+            const save = document.createElement('button');
+            save.type = 'button';
+            save.className = 'deck-copy-apply';
+            save.dataset.feedbackReplySave = item.id;
+            save.textContent = '코멘트 올리기';
+            save.addEventListener('click', () => { void saveReply(item, area.value); });
+            const cancel = document.createElement('button');
+            cancel.type = 'button';
+            cancel.className = 'feedback-move';
+            cancel.textContent = '취소';
+            cancel.addEventListener('click', () => { replyEditing = null; renderFeedback(); });
+            line.append(cancel, save);
+            box.append(area, line);
+            row.append(box);
+          }
         }
         feedbackList.append(row);
       }
@@ -5184,6 +5249,19 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         feedbackItems = feedbackItems.map((entry) => (entry.id === moved.id ? moved : entry));
         renderFeedback();
         setFeedbackMsg(`「${FEEDBACK_STATUS_LABEL[status]}」으로 옮겼습니다.`, true);
+      } catch (error) {
+        setFeedbackMsg(error instanceof Error ? error.message : String(error));
+      }
+    };
+
+    /** 코멘트 달기·고치기·떼기. 빈 글로 올리면 뗀다 — 한 글에 하나뿐이라 길이 하나다. */
+    const saveReply = async (item: FeedbackItem, reply: string) => {
+      try {
+        const saved = await server.replyFeedback(item.id, reply.trim(), adminPass);
+        feedbackItems = feedbackItems.map((entry) => (entry.id === saved.id ? saved : entry));
+        replyEditing = null;
+        renderFeedback();
+        setFeedbackMsg(saved.reply ? '코멘트를 달았습니다.' : '코멘트를 뗐습니다.', true);
       } catch (error) {
         setFeedbackMsg(error instanceof Error ? error.message : String(error));
       }
