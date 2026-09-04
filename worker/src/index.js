@@ -5,14 +5,29 @@
 // 와도 배포를 다시 할 일이 없다.
 
 const API = 'https://api.blablalink.com/api/game/proxy/';
-const COMMON = {
-  game_id: '29080', area_id: 'global', source: 'pc_web',
-  intl_game_id: '29080', language: 'ko', env: 'prod',
+
+// BlablaLink GetRegionList가 게임 id마다 다른 서버를 준다(실측 2026-09-04).
+// 29080 = 한·일·글로벌·북미·동남아, 29157 = 홍콩·마카오·대만(HMT).
+// 주소창 openid 앞자리("29157-…")가 이 값이다. 한 게임에 묶인 헤더로 다른 게임을
+// 조회하면 상류가 비공개 코드로 거절한다 — 공개 프로필인데도 «공개로 바꾸세요»가 된다.
+const GAMES = {
+  29080: { areaId: 'global', areas: [83, 81, 84, 82, 85] },
+  29157: { areaId: 'tw', areas: [91] },
 };
+const AREAS = Object.values(GAMES).flatMap((game) => game.areas);
+
+function commonParams(gameId) {
+  const game = GAMES[gameId] ?? GAMES[29080];
+  const id = GAMES[gameId] ? String(gameId) : '29080';
+  return {
+    game_id: id, area_id: game.areaId, source: 'pc_web',
+    intl_game_id: id, language: 'ko', env: 'prod',
+  };
+}
 
 // `X-Channel-Type`과 `X-Language`가 없으면 게이트웨이가 **응답 자체를 하지 않는다**
 // (에러도 아니고 무한 대기다, 실측 2026-08-23). 빠뜨리기 쉬우니 한 곳에 모아 둔다.
-const upstreamHeaders = (cookie) => ({
+const upstreamHeaders = (cookie, gameId) => ({
   'Content-Type': 'application/json',
   Accept: 'application/json, text/plain, */*',
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/151.0.0.0 Safari/537.36',
@@ -20,13 +35,9 @@ const upstreamHeaders = (cookie) => ({
   Referer: 'https://www.blablalink.com/',
   'X-Channel-Type': '2',
   'X-Language': 'ko',
-  'X-Common-Params': JSON.stringify(COMMON),
+  'X-Common-Params': JSON.stringify(commonParams(gameId)),
   Cookie: cookie,
 });
-
-// BlablaLink GetRegionList가 돌려주는 공식 서버. 수동 선택이면 하나만, 자동이면 전부
-// 조회한다. 한 계정에 지역이 둘 이상 걸리기도 해서 자동은 하나를 찾았다고 멈추지 않는다.
-const AREAS = [83, 81, 84, 82, 85];
 
 const DETAIL_BATCH = 60;      // 상세는 60종씩 — 그 이상은 상류가 잘라 낸다
 
@@ -38,8 +49,8 @@ class SyncError extends Error {
   }
 }
 
-/** 프로필 URL(또는 붙여넣은 openid) → 숫자 openid. */
-export function openidFrom(input) {
+/** 프로필 URL(또는 붙여넣은 openid) → 숫자 openid와 게임 id. */
+export function parseProfile(input) {
   const text = String(input ?? '').trim();
   if (!text) return null;
 
@@ -64,19 +75,26 @@ export function openidFrom(input) {
       const guess = atob(unpadded.padEnd(Math.ceil(unpadded.length / 4) * 4, '='));
       if (/^[\x20-\x7e]+$/.test(guess)) decoded = guess;
     } catch { /* base64가 아니면 원문 그대로 */ }
-    // "29080-15361668407129878426" → 뒤 숫자만이 intl_open_id다.
+    // "29157-9332…" → 앞은 게임 id, 뒤 숫자만이 intl_open_id다.
+    const prefixed = decoded.match(/^(\d{4,6})-(\d{6,})\s*$/);
+    if (prefixed) return { openid: prefixed[2], gameId: Number(prefixed[1]) };
     const match = decoded.match(/(\d{6,})\s*$/);
-    if (match) return match[1];
+    if (match) return { openid: match[1], gameId: null };
   }
   return null;
 }
 
-async function post(route, body, cookie) {
+/** 프로필 URL(또는 붙여넣은 openid) → 숫자 openid. */
+export function openidFrom(input) {
+  return parseProfile(input)?.openid ?? null;
+}
+
+async function post(route, body, cookie, gameId) {
   let response;
   try {
     response = await fetch(API + route, {
       method: 'POST',
-      headers: upstreamHeaders(cookie),
+      headers: upstreamHeaders(cookie, gameId),
       body: JSON.stringify(body),
     });
   } catch (cause) {
@@ -102,9 +120,9 @@ const PRIVACY_CODES = new Set([
   1303002,   // proxy.GetUserShiftyspadPrivacy error
 ]);
 
-async function collectArea(openid, area, cookie) {
+async function collectArea(openid, area, cookie, gameId) {
   const roster = await post('Game/GetUserCharacters',
-    { intl_open_id: openid, nikke_area_id: area }, cookie);
+    { intl_open_id: openid, nikke_area_id: area }, cookie, gameId);
   const characters = roster.code === 0 ? (roster.data?.characters ?? null) : null;
   if (!characters || characters.length === 0) {
     return { failedCode: roster.code ?? 0, failedMsg: roster.msg ?? '' };
@@ -116,7 +134,7 @@ async function collectArea(openid, area, cookie) {
   for (let i = 0; i < codes.length; i += DETAIL_BATCH) {
     const chunk = await post('Game/GetUserCharacterDetails',
       { intl_open_id: openid, nikke_area_id: area, name_codes: codes.slice(i, i + DETAIL_BATCH) },
-      cookie);
+      cookie, gameId);
     if (chunk.code !== 0) {
       throw new SyncError('upstream',
         `육성 상세를 받지 못했습니다 (${chunk.code} ${chunk.msg ?? ''}).`, 502);
@@ -129,7 +147,7 @@ async function collectArea(openid, area, cookie) {
   let outpost = null;
   try {
     const info = await post('Game/GetUserProfileOutpostInfo',
-      { intl_open_id: openid, nikke_area_id: area }, cookie);
+      { intl_open_id: openid, nikke_area_id: area }, cookie, gameId);
     if (info.code === 0) outpost = info.data?.outpost_info ?? null;
   } catch (error) {
     if (error.reason === 'session') throw error;
@@ -182,23 +200,30 @@ async function health(cookie) {
 }
 
 async function sync(profileUrl, cookie, requestedArea) {
-  const openid = openidFrom(profileUrl);
-  if (!openid) {
+  const parsed = parseProfile(profileUrl);
+  if (!parsed) {
     throw new SyncError('badurl',
       '블라블라링크 프로필 URL을 알아보지 못했습니다. blablalink.com/user 주소를 그대로 붙여넣어 주세요.',
       400);
   }
+  const { openid, gameId } = parsed;
+  const game = GAMES[gameId] ?? GAMES[29080];
 
   const selectedArea = requestedArea === undefined || requestedArea === null || requestedArea === ''
     ? null : Number(requestedArea);
   if (selectedArea !== null && !AREAS.includes(selectedArea)) {
     throw new SyncError('badarea', '지원하지 않는 서버입니다.', 400);
   }
+  // 게임 id를 알면 그 게임의 서버만 본다. 글로벌 다섯 곳을 홍콩·대만 계정에
+  // 들이대면 전부 비공개 코드가 나와 «공개로 바꾸세요»가 된다.
+  const targets = selectedArea === null
+    ? game.areas
+    : (game.areas.includes(selectedArea) ? [selectedArea] : game.areas);
 
   const areas = [];
   const failures = [];
-  for (const area of selectedArea === null ? AREAS : [selectedArea]) {
-    const collected = await collectArea(openid, area, cookie);
+  for (const area of targets) {
+    const collected = await collectArea(openid, area, cookie, gameId);
     if (collected.failedCode === undefined) areas.push(collected);
     else failures.push(collected);
   }
