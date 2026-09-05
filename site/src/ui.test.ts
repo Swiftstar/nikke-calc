@@ -2400,7 +2400,8 @@ describe('calculator UI', () => {
     expect(root.querySelector<HTMLElement>('[data-deck-result]')!.dataset.deckResult).toBe('2');
     expect(root.querySelector('[data-batch-total]')?.textContent).toContain('246,912');
     expect(root.querySelector('[data-status]')?.textContent).toContain('2개 덱 계산 완료');
-  });
+    // 덱 둘을 채우고 계산까지 돌리는 시험이라 느린 기계(CI)에서는 기본 5초를 넘긴다.
+  }, 20_000);
 
   it('「이 육성을 덱 전원에게」가 덱의 나머지에게 육성을 입힌다', () => {
     mountCalculator(root, { catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage });
