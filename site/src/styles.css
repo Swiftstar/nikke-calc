@@ -487,6 +487,10 @@ input:hover, select:hover { border-color: rgba(69,214,208,.5); }
 .deck-moves[hidden] { display: none; }
 .deck-clear { padding: 6px 10px; border: 1px solid rgba(255,119,135,.42); border-radius: 6px; background: rgba(255,119,135,.07); color: var(--danger); font: 700 10px ui-monospace, monospace; cursor: pointer; }
 .deck-clear:hover { background: rgba(255,119,135,.16); border-color: var(--danger); }
+/* 덱·5덱 육성 되돌리기 — 비우기 옆에 같은 크기로 서되, 지우는 일이 아니라
+   «불러온 값으로 돌아가는» 일이라 호박색이다. */
+.deck-restore { padding: 6px 10px; border: 1px solid rgba(255,191,60,.4); border-radius: 6px; background: rgba(255,191,60,.07); color: #f3dfae; font: 700 10px ui-monospace, monospace; cursor: pointer; }
+.deck-restore:hover { background: rgba(255,191,60,.18); border-color: var(--amber); }
 .deck-move { width: 26px; min-height: 26px; padding: 0; border: 1px solid rgba(146,176,201,.28); border-radius: 6px; background: rgba(3,10,17,.6); color: #cfeceb; font: 700 13px/1 ui-monospace, monospace; cursor: pointer; }
 .deck-move:hover:not(:disabled) { background: rgba(69,214,208,.22); border-color: var(--cyan); }
 .deck-move:disabled { opacity: .3; cursor: default; }
@@ -881,6 +885,14 @@ footer a { color: #93aabd; text-decoration: none; font-weight: 800; letter-spaci
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
 
+/* 계산 취소 — 돌고 있을 때만 실행 단추 옆에 선다. 되돌릴 수 없는 일이 아니라
+   «그만»이므로 위험색이 아니라 조용한 회색으로 둔다. */
+.calc-cancel { padding: 0 16px; min-height: 44px; border: 1px solid rgba(255,119,135,.42);
+  border-radius: 10px; background: rgba(255,119,135,.08); color: #f0c3c3;
+  font: 800 13px inherit; cursor: pointer; white-space: nowrap; }
+.calc-cancel:hover:not(:disabled) { background: rgba(255,119,135,.18); border-color: var(--danger); }
+.calc-cancel:disabled { opacity: .5; cursor: default; }
+
 /* 커뮤니티 안내 띠. 바로 아래 안내 링크와 헷갈리지 않게 호박색으로 가른다 —
    저쪽은 늘 있는 길잡이, 이쪽은 기한이 있는 알림이다. */
 .site-campaign { display: flex; align-items: center; justify-content: center; gap: 6px 12px; flex-wrap: wrap; margin: 0 0 6px; padding: 10px 40px 10px 14px; position: relative; background: rgba(255,191,60,.1); border: 1px solid rgba(255,191,60,.3); border-radius: 8px; font-size: 13px; }
@@ -889,6 +901,12 @@ footer a { color: #93aabd; text-decoration: none; font-weight: 800; letter-spaci
 .site-campaign-link:hover { color: var(--amber-hot); text-decoration: underline; }
 .site-campaign-close { position: absolute; top: 6px; right: 8px; width: 24px; height: 24px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 14px; line-height: 1; cursor: pointer; border-radius: 6px; }
 .site-campaign-close:hover { background: rgba(255,191,60,.16); color: var(--ink); }
+/* 초읽기 — 안내 띠 바로 아래 한 줄. 숫자는 고정폭이라 1초마다 글자가 안 흔들린다. */
+.site-countdown { margin: 0 0 6px; padding: 7px 14px; text-align: center;
+  border: 1px solid rgba(255,191,60,.22); border-radius: 8px;
+  background: rgba(255,191,60,.06); color: #f3dfae; font-size: 13px; font-weight: 700; }
+.site-countdown b { font: 800 14px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums; color: var(--amber); letter-spacing: .5px; }
 
 /* 상단 안내 링크 */
 .site-notice { margin: 0 0 4px; padding: 10px 14px; background: rgba(69,214,208,.08); border: 1px solid rgba(69,214,208,.24); border-radius: 8px; text-align: center; font-size: 13px; font-weight: 700; }
@@ -1087,6 +1105,23 @@ button.roster-cell.is-taken { opacity: .35; cursor: not-allowed; }
 .preset-remove { padding: 6px 10px; border: 1px solid rgba(233,110,110,.3); background: rgba(233,110,110,.08); color: #f0c3c3; font-size: 11px; border-radius: 7px; cursor: pointer; }
 .preset-remove:hover { background: rgba(233,110,110,.18); }
 .preset-empty { margin: 0; color: var(--muted); font-size: 11px; }
+/* 프리셋 초상화 — 이름 아래에 한 줄로 깐다. 이름만으로는 어떤 조합이었는지
+   안 떠오른다(피드백). 목록 격자의 다음 칸이라 이름 줄과 붙어 보인다. */
+.preset-preview { margin: -2px 0 4px; padding-left: 2px; }
+.preset-preview .share-portrait { width: 26px; height: 26px; }
+.preset-preview .share-deck-label { font-size: 9px; }
+
+/* 「어느 덱을 가져올까요?」 — 덱이 여럿 든 코드에서 한 덱만 꺼낼 때. */
+.share-pick { display: grid; gap: 6px; margin-top: 8px; }
+.share-pick-title { margin: 0; color: var(--muted); font-size: 11px; font-weight: 700; }
+.share-pick-deck { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: 8px; background: rgba(7,15,25,.6);
+  color: var(--ink); font: inherit; cursor: pointer; text-align: left; }
+.share-pick-deck:hover { border-color: var(--cyan); background: rgba(69,214,208,.1); }
+.share-pick-deck.is-on { border-color: var(--cyan); background: rgba(69,214,208,.16); }
+.share-pick-label { flex: 0 0 auto; font-size: 11px; color: var(--cyan); }
+.share-pick-deck .share-decks { margin: 0; }
+.share-pick-deck .share-portrait { width: 26px; height: 26px; }
 
 /* 덱 비교 · 계산 기록 */
 .deck-rank { margin: 6px 0 0; color: var(--muted); font-size: 11px; font-weight: 700; }
@@ -1253,7 +1288,23 @@ button.roster-cell.is-taken { opacity: .35; cursor: not-allowed; }
   background: rgba(3,9,16,.6); color: var(--ink); font: 400 11px ui-monospace, monospace; }
 .union-decks { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(146,176,201,.08); }
 .union-error { flex: 1 1 100%; margin: 2px 0 0; color: var(--amber); font-size: 10.5px; }
+/* 덱 칸 늘리기·줄이기. 코드 줄과 섞이지 않게 한 줄 띄워 오른쪽에 모은다. */
+.union-deck-tools { display: flex; align-items: center; gap: 6px; margin-top: 8px;
+  padding-top: 6px; border-top: 1px dashed rgba(146,176,201,.1); }
+.union-deck-count { margin-left: auto; color: var(--muted); font: 700 10px ui-monospace, monospace; }
+/* 덱 한 칸의 니케를 그 자리에서 고치는 다섯 칸. */
+.union-squad-edit { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px;
+  padding: 8px; border: 1px solid rgba(69,214,208,.24); border-radius: 8px;
+  background: rgba(69,214,208,.05); }
+.union-squad-slot { flex: 1 1 120px; min-width: 0; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: 6px; background: rgba(3,9,16,.6);
+  color: var(--ink); font: inherit; font-size: 11px; }
+.union-squad-slot:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
 .union-run { border-color: var(--amber) !important; color: var(--amber) !important; }
+
+/* 결과 내보내기 — 결과가 있을 때만 결과 판 위에 선다. */
+.union-export { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.union-export-note { color: var(--muted); font-size: 11px; }
 
 /* 결과 — [이름][싱크로] 아래로 보스마다 덱 줄이 선다. */
 .union-report { margin-top: 14px; }
@@ -2277,9 +2328,15 @@ body.bm-open { overflow: hidden; }
 /* 두 번 눌러야 터지는 단추 — 겨눈 동안은 스스로 붉어진다(`confirm-twice.ts`). */
 .is-armed { border-color: rgba(255,120,140,.6) !important; color: #ffb3c0 !important;
   background: rgba(255,60,90,.16) !important; }
-/* 「이 육성을 덱 전원에게」 — 베껴오기와 같은 자리, 같은 무게로 선다. */
-.spread-growth { display: grid; gap: 6px; margin-top: 6px; }
-.spread-apply { justify-self: start; }
+/* 「이 육성을 덱 전원에게」 — 베껴오기와 같은 자리, 같은 무게로 선다.
+   「불러온 값으로 되돌리기」도 바로 아래 같은 모양으로 붙는다 — 덮어쓴 바로 그 자리에서
+   물릴 수 있어야 한다. */
+.spread-growth, .restore-growth { display: grid; gap: 6px; margin-top: 6px; }
+.spread-apply, .restore-apply { justify-self: start; }
+/* 되돌리기는 «불러온 값으로》 돌아가는 일이라 덮어쓰기와 색을 가른다. */
+.restore-apply { border-color: rgba(255,191,60,.32); background: rgba(255,191,60,.08);
+  color: #f3dfae; }
+.restore-apply:hover { border-color: var(--amber); background: rgba(255,191,60,.18); }
 /* 오버로드 옵션 머리 — 제목 옆에 「랜덤 채우기」와 베껴오기가 선다. */
 .ol-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ol-head h4 { margin: 0; }

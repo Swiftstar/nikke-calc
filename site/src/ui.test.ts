@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { StorageLike } from './cache';
-import { ANNOUNCEMENTS } from './announcement';
+import { ANNOUNCEMENTS, countdownToShow } from './announcement';
 import { LATEST_NOTICE_ID } from './notices';
 import { mountCalculator, type CalculatorClientLike } from './ui';
 import { decodeBattleCode, encodeBattleCode } from './share-code';
@@ -119,6 +119,37 @@ class FakeClient implements CalculatorClientLike {
     this.lastRequest = request;
     this.requests.push(request);
     return calculated;
+  }
+
+  dispose(): void {}
+}
+
+/**
+ * 계산을 붙잡아 두는 대역. 취소 단추를 눌러 볼 수 있게 «아직 안 끝난 계산»을 만든다.
+ * 실제 풀처럼 `cancel()`이 돌던 요청을 «취소»로 끊는다.
+ */
+class HangingClient implements CalculatorClientLike {
+  prepareCalls = 0;
+  simulateCalls = 0;
+  private rejectAll: Array<(error: Error) => void> = [];
+
+  async prepare(): Promise<void> {
+    this.prepareCalls += 1;
+  }
+
+  simulate(): Promise<SimulationResult> {
+    this.simulateCalls += 1;
+    return new Promise<SimulationResult>((_resolve, reject) => { this.rejectAll.push(reject); });
+  }
+
+  cancel(): void {
+    const waiting = this.rejectAll;
+    this.rejectAll = [];
+    for (const reject of waiting) {
+      const error = new Error('계산을 취소했습니다.');
+      error.name = 'CalculationCancelled';
+      reject(error);
+    }
   }
 
   dispose(): void {}
@@ -342,6 +373,68 @@ describe('calculator UI', () => {
     root.querySelector<HTMLButtonElement>('[data-notice-dismiss]')?.click();
     openSettings();
     expect(root.querySelector('[data-restore-loaded]')).toBeNull();
+  });
+
+  it('편성 카드에도 되돌리기가 선다 — 「덱 전원에게」 바로 옆이다', () => {
+    // 넷을 덮어쓴 **직후**가 물리고 싶어지는 자리인데, 그전에는 수치 설정을 펴야만
+    // 되돌릴 수 있었다(피드백 2026-09-05).
+    seedLoadedRoster('blabla');
+    mountCalculator(root, {
+      catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage,
+    });
+    root.querySelector<HTMLButtonElement>('[data-notice-dismiss]')?.click();
+
+    const card = root.querySelector<HTMLElement>('[data-slot-card="0"]')!;
+    const button = card.querySelector<HTMLButtonElement>('[data-restore-one="리타"]')!;
+    expect(button).not.toBeNull();
+    expect(button.textContent).toContain('블라블라링크');
+    // 덮어쓰는 단추와 같은 카드 안에 있어야 «바로 옆»이다.
+    expect(card.querySelector('[data-spread-growth="리타"]')).not.toBeNull();
+  });
+
+  it('덱·5덱 되돌리기는 운용을 남긴다 — 컨트롤까지 날리면 못 되돌린다', () => {
+    seedLoadedRoster('blabla');
+    mountCalculator(root, {
+      catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage,
+    });
+    root.querySelector<HTMLButtonElement>('[data-notice-dismiss]')?.click();
+
+    const state = () => JSON.parse(localStorage.getItem('nikke-state-v1')!)
+      .decks[0].characters['리타'];
+    // 손으로 육성을 만지고, 운용(컨트롤)도 잡아 둔다.
+    const skill = root.querySelector<HTMLSelectElement>('[data-slot-card="0"] [data-skill-level="1"]')!;
+    skill.value = '3';
+    skill.dispatchEvent(new Event('change', { bubbles: true }));
+    const saved = JSON.parse(localStorage.getItem('nikke-state-v1')!);
+    saved.decks[0].characters['리타'].control = { reloadCancel: true };
+    localStorage.setItem('nikke-state-v1', JSON.stringify(saved));
+
+    root.remove();
+    root = document.createElement('main');
+    document.body.append(root);
+    mountCalculator(root, {
+      catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage,
+    });
+    root.querySelector<HTMLButtonElement>('[data-notice-dismiss]')?.click();
+    expect(state().skillLevels['1']).toBe(3);
+
+    const deckRestore = root.querySelector<HTMLButtonElement>('[data-deck-restore]')!;
+    expect(deckRestore.hidden).toBe(false);
+    deckRestore.click();                       // 되묻기
+    expect(state().skillLevels['1']).toBe(3);
+    deckRestore.click();                       // 적용
+    expect(state().growthStage).toBe(7);
+    expect(state().skillLevels).toBeUndefined();
+    // 운용은 그대로 남는다 — 계정에서 불러오는 값이 아니라 조합마다 짜는 값이다.
+    expect(state().control).toEqual({ reloadCancel: true });
+  });
+
+  it('불러온 값이 없으면 덱 되돌리기 단추를 감춘다', () => {
+    mountCalculator(root, {
+      catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage,
+    });
+    expect(root.querySelector<HTMLButtonElement>('[data-deck-restore]')!.hidden).toBe(true);
+    expect(root.querySelector<HTMLButtonElement>('[data-deck-restore-all]')!.hidden).toBe(true);
   });
 
   it('베껴오기가 오버로드 줄까지 가져온다 — 합계만 옮기면 드롭다운이 안 따라온다', () => {
@@ -780,6 +873,226 @@ describe('calculator UI', () => {
 
     const stored = JSON.parse(localStorage.getItem('nikke-presets-v1')!) as Array<{ name: string }>;
     expect(stored.map((item) => item.name).sort()).toEqual(['판 전체', '한 덱짜리']);
+  });
+
+  it('같은 이름으로 저장하면 한 번 묻는다 — 말없이 덮어쓰지 않는다', () => {
+    // 이름을 다시 쓰는 것은 «갱신»일 때도 있지만 «남의 자리인 줄 몰랐다»일 때도 있다
+    // (피드백 2026-09-05).
+    mountCalculator(root, {
+      catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage,
+    });
+    root.querySelector<HTMLButtonElement>('[data-share-open]')!.click();
+    const name = root.querySelector<HTMLInputElement>('[data-preset-name]')!;
+    const save = root.querySelector<HTMLButtonElement>('[data-preset-save]')!;
+    const stored = () => JSON.parse(localStorage.getItem('nikke-presets-v1')!) as
+      Array<{ name: string; code: string }>;
+
+    name.value = '솔레 1군';
+    save.click();
+    const first = stored()[0]!.code;
+    expect(stored()).toHaveLength(1);
+
+    // 편성을 바꾸고 같은 이름으로 저장하려 든다.
+    root.querySelector<HTMLButtonElement>('[data-share-close]')!.click();
+    clearCharacterSlot(root, 0);
+    root.querySelector<HTMLButtonElement>('[data-share-open]')!.click();
+    name.value = '솔레 1군';
+    save.click();
+    // 첫 번째 누름은 되묻기 — 저장된 것은 그대로다.
+    expect(save.textContent).toBe('덮어씁니다');
+    expect(root.querySelector('[data-share-msg]')?.textContent).toContain('이미 있습니다');
+    expect(stored()[0]!.code).toBe(first);
+
+    save.click();
+    expect(stored()).toHaveLength(1);
+    expect(stored()[0]!.code).not.toBe(first);
+    expect(root.querySelector('[data-share-msg]')?.textContent).toContain('덮어썼습니다');
+    expect(save.textContent).toBe('저장');
+  });
+
+  it('이름을 고치면 되묻기가 풀린다 — 새 이름은 새로 저장이다', () => {
+    mountCalculator(root, {
+      catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage,
+    });
+    root.querySelector<HTMLButtonElement>('[data-share-open]')!.click();
+    const name = root.querySelector<HTMLInputElement>('[data-preset-name]')!;
+    const save = root.querySelector<HTMLButtonElement>('[data-preset-save]')!;
+
+    name.value = '솔레 1군';
+    save.click();
+    name.value = '솔레 1군';
+    save.click();
+    expect(save.textContent).toBe('덮어씁니다');
+
+    name.value = '솔레 2군';
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(save.textContent).toBe('저장');
+    save.click();
+    const stored = JSON.parse(localStorage.getItem('nikke-presets-v1')!) as Array<{ name: string }>;
+    expect(stored.map((item) => item.name).sort()).toEqual(['솔레 1군', '솔레 2군']);
+  });
+
+  it('저장한 프리셋을 초상화로 알아본다', () => {
+    // 이름만 늘어놓으면 «어떤 조합이었나»가 안 떠오른다(피드백 2026-09-05).
+    mountCalculator(root, {
+      catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage,
+    });
+    root.querySelector<HTMLButtonElement>('[data-share-open]')!.click();
+    root.querySelector<HTMLInputElement>('[data-preset-name]')!.value = '솔레 1군';
+    root.querySelector<HTMLButtonElement>('[data-preset-save]')!.click();
+
+    const list = root.querySelector<HTMLElement>('[data-preset-list]')!;
+    const shots = [...list.querySelectorAll<HTMLImageElement>('.share-portrait')];
+    expect(shots.length).toBeGreaterThan(0);
+    // 초상화에는 이름이 붙어 있어야 한다 — 그림을 못 받는 사람도 읽을 수 있게.
+    expect(shots.map((image) => image.alt)).toContain('리타');
+  });
+
+  it('덱이 여럿 든 코드에서 원하는 덱을 골라 꺼낸다', () => {
+    mountCalculator(root, {
+      catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage,
+    });
+    root.querySelector<HTMLButtonElement>('[data-notice-dismiss]')?.click();
+
+    // 2덱까지 채운 판을 «5덱 전부»로 담아 코드를 만든다.
+    root.querySelector<HTMLInputElement>('#squad-mode')!.click();
+    root.querySelector<HTMLButtonElement>('[data-deck-tab="2"]')!.click();
+    chooseCharacter(root, 0, '나가');
+    root.querySelector<HTMLButtonElement>('[data-share-open]')!.click();
+    root.querySelector<HTMLButtonElement>('[data-share-scope-pick="all"]')!.click();
+    const code = root.querySelector<HTMLTextAreaElement>('[data-share-out]')!.value;
+
+    // 판을 비우고 「이 덱만」으로 그 코드를 받는다.
+    root.querySelector<HTMLButtonElement>('[data-share-scope-pick="one"]')!.click();
+    root.querySelector<HTMLButtonElement>('[data-deck-tab="1"]')!.click();
+    root.querySelector<HTMLTextAreaElement>('[data-share-in]')!.value = code;
+    root.querySelector<HTMLButtonElement>('[data-share-apply]')!.click();
+
+    // 첫 덱이 들어가고, 다른 덱으로 갈아 끼울 고르개가 함께 뜬다.
+    const pick = root.querySelector<HTMLElement>('[data-share-pick]')!;
+    expect(pick.hidden).toBe(false);
+    const buttons = [...pick.querySelectorAll<HTMLButtonElement>('[data-share-pick-deck]')];
+    expect(buttons.map((b) => b.dataset.sharePickDeck)).toEqual(['1', '2']);
+    expect(buttons[0]!.classList.contains('is-on')).toBe(true);
+
+    const deckOne = () => JSON.parse(localStorage.getItem('nikke-state-v1')!).decks[0].squad;
+    expect(deckOne()[0]).toBe('리타');
+
+    // 2덱을 고르면 그 덱이 지금 보고 있는 덱에 들어간다.
+    buttons[1]!.click();
+    expect(deckOne()[0]).toBe('나가');
+    const after = [...root.querySelectorAll<HTMLButtonElement>('[data-share-pick-deck]')];
+    expect(after[1]!.classList.contains('is-on')).toBe(true);
+  });
+
+  it('안내 띠 아래에 초읽기가 hh:mm:ss로 돈다', () => {
+    const target = Date.parse(countdownToShow()!.target);
+    // 남은 시간이 정확히 1시간 2분 3초인 순간으로 시계를 맞춘다.
+    vi.useFakeTimers();
+    vi.setSystemTime(target - (3_600_000 + 2 * 60_000 + 3_000));
+    try {
+      mountCalculator(root, {
+        catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage,
+      });
+      const band = root.querySelector<HTMLElement>('[data-countdown]')!;
+      expect(band.hidden).toBe(false);
+      expect(band.querySelector('[data-countdown-label]')!.textContent)
+        .toBe('칠무해 석방까지 남은 시간');
+      const clock = () => band.querySelector('[data-countdown-clock]')!.textContent;
+      expect(clock()).toBe('01:02:03');
+      // 대괄호는 화면에 그대로 나온다.
+      expect(band.textContent).toBe('[칠무해 석방까지 남은 시간 01:02:03]');
+
+      vi.advanceTimersByTime(4_000);
+      expect(clock()).toBe('01:01:59');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('초읽기는 안내 띠를 닫아도 남는다 — 닫는 것은 「읽었다」는 뜻이다', () => {
+    mountCalculator(root, {
+      catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage,
+    });
+    root.querySelector<HTMLButtonElement>('[data-campaign-close]')!.click();
+    expect(root.querySelector<HTMLElement>('[data-campaign]')!.hidden).toBe(true);
+    expect(root.querySelector<HTMLElement>('[data-countdown]')!.hidden).toBe(false);
+  });
+
+  it('시각이 지나면 00:00:00에서 멈춘다', () => {
+    const target = Date.parse(countdownToShow()!.target);
+    vi.useFakeTimers();
+    vi.setSystemTime(target + 5_000);
+    try {
+      mountCalculator(root, {
+        catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage,
+      });
+      const clock = () => root.querySelector('[data-countdown-clock]')!.textContent;
+      expect(clock()).toBe('00:00:00');
+      vi.advanceTimersByTime(10_000);
+      expect(clock()).toBe('00:00:00');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('화면에서 떨어져 나간 시계는 스스로 멈춘다', () => {
+    // 걷는 함수를 안 부르고 판을 갈아 끼우는 자리가 있다(바로 아래 «저장된 결과»
+    // 시험이 그렇게 한다). 그때 1초마다 도는 시계가 쌓이면 뒤로 갈수록 느려진다.
+    vi.useFakeTimers();
+    try {
+      mountCalculator(root, {
+        catalog, settings, version: 'v1', client: new FakeClient(), storage: localStorage,
+      });
+      const clock = root.querySelector<HTMLElement>('[data-countdown-clock]')!;
+      vi.advanceTimersByTime(1_000);
+      const ticking = clock.textContent;
+
+      root.replaceChildren();               // 시계가 화면에서 떨어진다
+      vi.advanceTimersByTime(5_000);        // 다음 한 번에 스스로 멈춘다
+      expect(vi.getTimerCount()).toBe(0);
+      // 떨어진 뒤로는 글자도 안 건드린다.
+      expect(clock.textContent).toBe(ticking);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('돌고 있을 때만 계산 취소 단추가 나온다', async () => {
+    // 「보스 조건 잘못 걸고 돌렸는데 끝날 때까지 기다려야 한다」는 제보(2026-09-06).
+    const client = new HangingClient();
+    mountCalculator(root, { catalog, settings, version: 'v1', client, storage: localStorage });
+    const cancel = root.querySelector<HTMLButtonElement>('[data-calc-cancel]')!;
+    expect(cancel.hidden).toBe(true);
+
+    root.querySelector<HTMLInputElement>('#duration')!.value = '10';
+    root.querySelector<HTMLFormElement>('form')!.requestSubmit();
+    await flush();
+    expect(cancel.hidden).toBe(false);
+    expect(client.simulateCalls).toBe(1);
+
+    const prepares = client.prepareCalls;
+    cancel.click();
+    await flush();
+
+    expect(cancel.hidden).toBe(true);
+    // 실패가 아니다 — 자기가 누른 것이 오류로 보이면 안 된다.
+    expect(root.querySelector('[data-status]')?.textContent).toContain('취소');
+    expect(root.querySelector('[data-status]')?.textContent).not.toContain('실패');
+    expect(root.querySelector<HTMLElement>('[data-errors]')?.hidden).toBe(true);
+    // 끊은 스레드를 곧바로 데워 둔다 — 다음 계산이 준비를 기다리지 않게.
+    expect(client.prepareCalls).toBe(prepares + 1);
+    // 다시 돌릴 수 있다.
+    expect(root.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+  });
+
+  it('취소를 못 하는 계산기 대역에서는 단추를 아예 안 낸다', async () => {
+    const client = new FakeClient();
+    mountCalculator(root, { catalog, settings, version: 'v1', client, storage: localStorage });
+    root.querySelector<HTMLInputElement>('#duration')!.value = '10';
+    root.querySelector<HTMLFormElement>('form')!.requestSubmit();
+    await flush();
+    expect(root.querySelector<HTMLButtonElement>('[data-calc-cancel]')!.hidden).toBe(true);
   });
 
   it('유니온 탭에는 판 전체를 한 코드로 주고받는 줄이 있다', () => {
@@ -2216,7 +2529,9 @@ describe('calculator UI', () => {
 
     expect(secondClient.simulateCalls).toBe(0);
     expect(root.querySelector('[data-status]')?.textContent).toContain('저장된 결과');
-  });
+    // 한 시험 안에서 판을 **두 번** 세우고 두 번 돌린다 — 느린 기계(CI)에서는 5초를
+    // 넘긴다. 바로 위 보고서 시험과 같은 몫이다.
+  }, 20_000);
 
   it('renders a successful result when persistent storage rejects writes', async () => {
     const client = new FakeClient();

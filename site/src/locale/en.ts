@@ -21,6 +21,7 @@ export const EN: Record<string, string> = {
   '니케 마이너 갤러리에서 경쟁 콘텐츠 공정성 회복을 위한 이용자 공동성명을 모집중입니다. 많은 참여 부탁드립니다.':
     'A joint user statement calling for fairness in competitive content is gathering signatures at the NIKKE minor gallery on DCInside (in Korean). Everyone is welcome to take part.',
   '성명 보러 가기 →': 'Read the statement →',
+  '칠무해 석방까지 남은 시간': 'Time until the Seven Warlords are released',
   '설명서 확인, 문의, 피드백, 착한말 등은 여기로 →': 'Guide, questions, feedback and kind words → here',
   '계산기': 'Calculator',
   '유니온 레이드': 'Union Raid',
@@ -232,6 +233,20 @@ export const EN: Record<string, string> = {
   '. 그 니케가 없어도 짤 수 있는 조합만 남기려는 것입니다.': ' — so you keep only squads you can actually build without them.',
   '렛츠도로 CSV 불러오기': 'Load Lets-Doro CSV',
   '가나다': 'A-Z',
+  '계산 취소': 'Cancel run',
+  '돌고 있는 계산을 끊습니다. 작업 스레드를 다시 세우므로 다음 계산은 준비부터 시작합니다':
+    'Stops the run in progress. The worker thread is rebuilt, so the next run starts from setup',
+  '조합 추가': 'Add a squad',
+  '마지막 칸 빼기': 'Drop the last slot',
+  '고치기': 'Edit',
+  '이 덱의 니케를 한 명씩 바꿉니다. 고치면 조합 코드도 같이 바뀝니다':
+    'Swap the NIKKEs in this deck one at a time. The squad code changes with it',
+  '결과 CSV 내려받기': 'Download results CSV',
+  '표 복사': 'Copy table',
+  '지휘관 × 보스 × 덱 한 줄짜리 표로 내려받습니다. 엑셀·구글 시트에서 바로 열립니다':
+    'Downloads one row per commander x boss x deck. Opens straight in Excel or Google Sheets',
+  '같은 표를 클립보드에 담습니다. 시트에 그대로 붙여넣으면 칸이 나뉩니다':
+    'Puts the same table on the clipboard. Paste into a sheet and it splits into columns',
   '덱 비우기': 'Clear deck',
   '5덱 비우기': 'Clear all 5 decks',
   '현재 덱 복사': 'Copy this deck',
@@ -502,6 +517,19 @@ export const EN: Record<string, string> = {
   '블라블라링크': 'Blablalink',
   '렛츠도로 CSV': 'Lets-Doro CSV',
   '불러온 값': 'Imported values',
+  '{where}(으)로 되돌리기': 'Revert to {where}',
+  '덱 육성 되돌리기': 'Revert deck investment',
+  '5덱 육성 되돌리기': 'Revert all 5 decks',
+  '이 덱 전원의 육성을 불러온 값으로 되돌립니다. 컨트롤·버스트 운용은 그대로 둡니다':
+    'Reverts every NIKKE in this deck to the imported values. Control and burst usage stay as they are',
+  '다섯 덱 전원의 육성을 불러온 값으로 되돌립니다. 컨트롤·버스트 운용은 그대로 둡니다':
+    'Reverts every NIKKE in all five decks to the imported values. Control and burst usage stay as they are',
+  '손으로 만진 육성을 불러온 그대로 되돌립니다. 컨트롤·버스트 운용은 그대로 둡니다':
+    'Reverts what you edited back to the imported values. Control and burst usage stay as they are',
+  '돌파 · 스킬 · 오버로드 · 장비 강화 · 소장품 · 큐브를 불러온 값으로 되돌립니다. 컨트롤 · 버스트 운용은 그대로 둡니다.':
+    'Restores limit break, skills, Overload, gear enhancement, collection and cube to the imported values. Control and burst usage stay as they are.',
+  '이 코드의 어느 덱을 가져올까요?': 'Which deck from this code do you want?',
+  '덮어씁니다': 'Overwrite',
   '서버로 전송되지 않습니다.': 'Nothing is sent to a server.',
   '무엇을 바꿔 본 판인지 적어 두세요 (예: 0장 · 1장 · 2장)': 'Note what you changed in this run (e.g. 0 / 1 / 2 copies)',
   '두 번 누르면 이름을 붙일 수 있습니다. 끌어다 놓으면 순서가 바뀝니다': 'Double-click to name it. Drag to reorder',
