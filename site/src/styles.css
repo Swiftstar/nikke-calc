@@ -241,7 +241,11 @@ input, select {
 input:hover, select:hover { border-color: rgba(69,214,208,.5); }
 
 /* 자주 바꾸는 조건 둘 — 조건 막대 바로 위. 창을 열지 않고 손대는 자리다. */
+/* 보스 코드·코어는 실행 단추와 **한 손 안에** 있어야 한다. 줄은 판 너비를 다 쓰는데
+   실행 단추는 오른쪽 끝에 있어서, 넓은 화면에서는 둘이 한 화면 폭만큼 떨어져 있었다
+   (피드백 2026-09-08). 좁은 화면은 단추가 줄을 통째로 쓰므로 그대로 왼쪽에 둔다. */
 .quick-cond { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 8px; }
+@media (min-width: 901px) { .quick-cond { justify-content: flex-end; } }
 .quick-code { display: inline-flex; align-items: center; gap: 7px; color: var(--muted);
   font-size: 11px; font-weight: 700; }
 .quick-code select { width: auto; min-height: 34px; padding-inline: 8px; font-size: 11px; }
@@ -261,8 +265,15 @@ input:hover, select:hover { border-color: rgba(69,214,208,.5); }
 .copy-from > summary::-webkit-details-marker { display: none; }
 .copy-from > summary::before { content: "⧉ "; }
 .copy-from > summary:hover { border-color: rgba(69,214,208,.32); color: #cfeceb; }
+/* 찾는 칸 · 고르는 칸 · 베끼는 단추. 칸이 좁아 검색칸은 한 줄을 통째로 쓴다. */
 .copy-from-row { display: grid; grid-template-columns: 1fr auto; gap: 5px; margin-top: 6px; }
 .copy-from-row select { min-height: 30px; padding-inline: 6px; font-size: 10px; }
+.copy-from-search { grid-column: 1 / -1; min-height: 28px; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: 6px; background: rgba(3,9,16,.6);
+  color: var(--ink); font-size: 10px; }
+.copy-from-search::placeholder { color: #5f7285; }
+.copy-from-options { display: grid; gap: 3px; margin-top: 6px; }
+.copy-from-options .inline-check { color: var(--muted); font-size: 9.5px; }
 .copy-from-apply { min-height: 30px; padding: 0 10px; border: 1px solid rgba(69,214,208,.3);
   border-radius: 6px; background: rgba(69,214,208,.1); color: #cfeceb;
   font: 800 10px inherit; cursor: pointer; }
@@ -942,13 +953,19 @@ button.roster-cell.is-taken { opacity: .35; cursor: not-allowed; }
 .slot-pick { margin-top: 6px; padding: 6px 8px; width: 100%; border: 1px solid rgba(69,214,208,.28); background: rgba(69,214,208,.08); color: #cfeceb; font-size: 11px; font-weight: 700; border-radius: 6px; cursor: pointer; }
 .slot-pick:hover { background: rgba(69,214,208,.18); border-color: var(--cyan); }
 
-/* 덱마다 다른 버스트 충전 — 켤 때만 다섯 칸이 나온다. 토글은 다른 토글과 같은
-   `.toggle-field` 규칙을 쓰고, 자리만 «버스트 게이지 충전» 바로 다음으로 고정한다. */
+/* 덱마다 따로 잡는 값들(버스트 충전 · 코어 유무) — 켤 때만 다섯 칸이 나온다.
+   **스위치와 그 칸은 한 덩이다**: 칸이 격자 저 아래 떨어져 있으면 켜고도 어디에
+   적는지 못 찾는다(피드백 2026-09-08). */
+.deck-split { margin-top: 10px; }
+.deck-split .toggle-field { margin: 0; }
 .deck-regen-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px;
-  margin-top: 10px; }
+  margin-top: 8px; }
 .deck-regen-grid[hidden] { display: none; }
 .deck-regen-grid label { display: grid; gap: 4px; }
 .deck-regen-grid span { color: var(--muted); font: 700 10px ui-monospace, monospace; }
+/* 코어 쪽은 숫자가 아니라 체크라 한 줄로 세운다. */
+.deck-core-grid label { display: flex; align-items: center; gap: 6px; }
+.deck-core-grid input { width: 14px; min-height: 14px; height: 14px; accent-color: var(--amber); }
 
 /* 업데이트 공지 */
 .notice-open { padding: 6px 12px; border: 1px solid rgba(255,191,60,.35); border-radius: 999px;
@@ -2429,3 +2446,48 @@ body.bm-open { overflow: hidden; }
 .abbrev-add { flex: 1 1 180px; padding: 7px 10px; border-radius: 9px;
   border: 1px solid var(--line); background: rgba(4,12,21,.55); color: var(--ink);
   font: 600 12px inherit; }
+
+/* ══ 오버효율 ═════════════════════════════════════════════════════════════
+   옵션 두 벌을 나란히 놓고 견주는 판. 고르는 것이 몇 개뿐이라 판을 넓게 쓰지 않고
+   한 줄기로 세운다 — 왼쪽에서 오른쪽으로 눈이 튀지 않게. */
+.lab-panel { display: grid; gap: 14px; }
+.lab-block { display: grid; gap: 8px; padding: 14px 16px; border: 1px solid var(--line);
+  border-radius: 10px; background: rgba(4,12,21,.5); }
+.lab-title { margin: 0; color: var(--ink); font: 800 12px ui-monospace, monospace; }
+.lab-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.lab-picker input, .lab-picker select { min-height: 32px; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: 7px; background: rgba(3,9,16,.6);
+  color: var(--ink); font-size: 11px; }
+.lab-custom { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.lab-sets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.lab-set { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: rgba(3,9,16,.45); align-content: start; }
+.lab-set-head { display: flex; align-items: baseline; justify-content: space-between; }
+.lab-set-head b { color: var(--cyan); font: 800 12px ui-monospace, monospace; }
+.lab-set-count { color: var(--muted); font: 700 10px ui-monospace, monospace; }
+.lab-set-count.is-over { color: var(--danger); }
+.lab-set-row { display: grid; grid-template-columns: 1fr 56px auto auto; gap: 5px; align-items: center; }
+.lab-set-row select, .lab-count { min-height: 30px; padding: 0 6px; border: 1px solid var(--line);
+  border-radius: 6px; background: rgba(3,9,16,.6); color: var(--ink); font-size: 10px; }
+.lab-unit { color: var(--muted); font-size: 10px; }
+.lab-drop { padding: 0 6px; border: 1px solid var(--line); border-radius: 6px;
+  background: transparent; color: var(--muted); cursor: pointer; }
+.lab-drop:hover { border-color: var(--danger); color: #ffd7de; }
+.lab-add { justify-self: start; padding: 4px 10px; border: 1px dashed rgba(69,214,208,.4);
+  border-radius: 6px; background: transparent; color: var(--cyan);
+  font: 700 10px ui-monospace, monospace; cursor: pointer; }
+.lab-run { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.lab-run .calculate-button { margin: 0; width: auto; min-height: 40px; padding: 0 26px; }
+.lab-squad { color: var(--muted); font: 700 11px ui-monospace, monospace; }
+.lab-result { display: grid; gap: 6px; }
+.lab-result-row { display: grid; grid-template-columns: auto 1fr auto auto; gap: 10px;
+  align-items: baseline; padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: 8px; background: rgba(4,12,21,.5); }
+.lab-result-row b { color: var(--cyan); font: 800 12px ui-monospace, monospace; }
+.lab-result-what { color: var(--muted); font-size: 11px; }
+.lab-result-row strong { color: var(--ink); font: 800 15px ui-monospace, monospace; }
+.lab-result-row small { color: var(--muted); font-size: 10px; }
+.lab-verdict { margin: 2px 0 0; color: var(--amber); font: 800 13px ui-monospace, monospace; }
+@media (max-width: 720px) {
+  .lab-sets, .lab-custom, .lab-picker { grid-template-columns: 1fr; }
+}
