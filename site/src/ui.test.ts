@@ -1898,6 +1898,63 @@ describe('calculator UI', () => {
     for (const name of withItem) expect(settings.characters[name]?.favoriteItem).toBeTruthy();
   });
 
+  it('0.1초 버킷에서도 고정 Y축 상한은 그래프와 같은 단위를 쓴다', async () => {
+    const client = new FakeClient();
+    client.simulate = async () => ({ ...calculated, timeline: {
+      bucket: 0.1, buckets: 2, damage: { 리타: [100, 200] }, bursts: {}, fullBurst: [],
+    } });
+    mountCalculator(root, { catalog, settings, version: 'v1', client, storage: localStorage });
+    root.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await flush();
+    expect(root.querySelector<HTMLInputElement>('[data-timeline-y-max]')!.value).toBe('200');
+  });
+
+  it.each([873, 400])('계정 싱크로 %i와 400을 전환하고 재동기화·새로고침 후에도 선택을 유지한다', async (initialLevel) => {
+    let syncedLevel: number | null = initialLevel;
+    vi.stubGlobal('fetch', async () => Response.json({
+      openid: '15361668407129878426',
+      areas: [{ area: 84, characters: [{ name_code: 5001, grade: 0, core: 0 }],
+        details: [{ name_code: 5001 }], stateEffects: [], outpost: { synchro_level: syncedLevel } }],
+    }));
+    const client = new FakeClient();
+    const deps = { catalog: catalog.map((entry) => ({ ...entry, nameCode: entry.name === '리타' ? 5001 : null })),
+      settings, version: `synchro-${initialLevel}`, client, storage: localStorage, blablaProxy: 'https://proxy.example' };
+    let unmount = mountCalculator(root, deps);
+    const toggle = () => root.querySelector<HTMLInputElement>('[data-account-synchro]')!;
+    const level = () => root.querySelector<HTMLInputElement>('#synchro-level')!.value;
+    expect(toggle()?.disabled).toBe(true);
+    root.querySelector<HTMLButtonElement>('[data-blabla-open]')!.click();
+    root.querySelector<HTMLInputElement>('[data-blabla-url]')!.value =
+      'https://www.blablalink.com/user?openid=15361668407129878426';
+    root.querySelector<HTMLButtonElement>('[data-blabla-sync]')!.click();
+    await flush(); await flush();
+    expect(toggle().disabled).toBe(false);
+    expect(toggle().checked).toBe(true);
+    expect(level()).toBe(String(initialLevel));
+    toggle().click();
+    expect(level()).toBe('400');
+    syncedLevel = 900;
+    root.querySelector<HTMLButtonElement>('[data-blabla-refresh]')!.click();
+    await flush(); await flush();
+    expect(level()).toBe('400');
+    syncedLevel = null;
+    root.querySelector<HTMLButtonElement>('[data-blabla-refresh]')!.click();
+    await flush(); await flush();
+    unmount(); root.replaceChildren();
+    unmount = mountCalculator(root, deps);
+    syncedLevel = 900;
+    root.querySelector<HTMLButtonElement>('[data-blabla-refresh]')!.click();
+    await flush(); await flush();
+    expect(toggle().checked).toBe(false);
+    expect(level()).toBe('400');
+    toggle().click();
+    expect(level()).toBe('900');
+    root.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await flush();
+    await vi.waitFor(() => expect(client.lastRequest?.synchroLevel).toBe(900));
+    unmount();
+  });
+
   it('sends the synchro level from the battle panel, and keeps it out of shared codes', async () => {
     const client = new FakeClient();
     mountCalculator(root, { catalog, settings, version: 'v1', client, storage: localStorage });
@@ -1925,7 +1982,8 @@ describe('calculator UI', () => {
   it('커뮤니티 안내 띠는 닫을 때까지 올 때마다 보인다', () => {
     // 업데이트 공지와 달리 **모달이 아니다** — 지나쳐도 다시 보여야 하는 알림이라
     // 머리에 붙여 두고, 닫은 사람에게만 걷는다.
-    const campaign = ANNOUNCEMENTS[0]!;
+    const campaign = { id: 'test-campaign', text: '테스트 안내', linkLabel: '안내 보기', href: 'https://example.com/' };
+    ANNOUNCEMENTS.push(campaign);
     const remount = () => {
       root.remove();
       root = document.createElement('main');
@@ -1957,6 +2015,7 @@ describe('calculator UI', () => {
     expect(localStorage.getItem('nikke-announcement-seen')).toBe(campaign.id);
 
     expect(remount().hidden).toBe(true);
+    ANNOUNCEMENTS.pop();
   });
 
   it('shows the update notice once, and not again after it is closed', () => {
@@ -2724,8 +2783,17 @@ describe('calculator UI', () => {
   }, 20_000);
 
   it('reuses a cached result instead of recalculating', async () => {
+    // 캐시 재사용만 검증한다. 700ms 뒤 버프 대상 미리 계산이 실행 횟수에 끼어들지 않게 한다.
+    const cacheSettings = { ...settings, buffTargetWatch: {} };
+    // 다른 시험에서 예약된 비동기 저장과 공유하지 않되, 두 화면은 같은 저장소를 쓴다.
+    const entries = new Map<string, string>();
+    const storage: StorageLike = {
+      getItem: (key) => entries.get(key) ?? null,
+      setItem: (key, value) => { entries.set(key, value); },
+      removeItem: (key) => { entries.delete(key); },
+    };
     const firstClient = new FakeClient();
-    mountCalculator(root, { catalog, settings, version: 'v1', client: firstClient, storage: localStorage });
+    mountCalculator(root, { catalog, settings: cacheSettings, version: 'v1', client: firstClient, storage });
     root.querySelector<HTMLInputElement>('#duration')!.value = '10';
     root.querySelector<HTMLFormElement>('form')!.requestSubmit();
     await flush();
@@ -2733,7 +2801,7 @@ describe('calculator UI', () => {
 
     root.replaceChildren();
     const secondClient = new FakeClient();
-    mountCalculator(root, { catalog, settings, version: 'v1', client: secondClient, storage: localStorage });
+    mountCalculator(root, { catalog, settings: cacheSettings, version: 'v1', client: secondClient, storage });
     root.querySelector<HTMLInputElement>('#duration')!.value = '10';
     root.querySelector<HTMLFormElement>('form')!.requestSubmit();
     await flush();
