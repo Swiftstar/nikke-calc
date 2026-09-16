@@ -1,3 +1,4 @@
+import { openCharacterInfo, customSkillInfo } from './character-info';
 import {
   ANNOUNCEMENT_KEY, announcementToShow, countdownClock, countdownDone, countdownToShow,
 } from './announcement';
@@ -81,7 +82,7 @@ import {
   buildCandidates, mergeRules, normalizeAbbrev, parseAbbrev, SEED_RULES,
   type AbbrevParse, type AbbrevRule,
 } from './squad-abbrev';
-import { createTimelineBlock, niceMax } from './timeline';
+import { createTimelineBlock, createTimelineComparison, niceMax } from './timeline';
 import {
   aggregateDeckResults,
   cacheKey,
@@ -137,6 +138,7 @@ export interface CalculatorClientLike {
 
 interface CalculatorDependencies {
   catalog: CharacterMeta[];
+  bundledCharacters?: SimulationRequest['customCharacters'];
   settings: SettingsCatalog;
   version: string;
   client: CalculatorClientLike;
@@ -425,7 +427,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   let unionHandle: UnionHandle | null = null;
   const cache = new ResultCache(storage, version, 30);
   const catalogByName = new Map(catalog.map((char) => [char.name, char]));
-  const decks = Array.from({ length: 5 }, (_, index) => emptyDeck(index + 1));
+  const decks = Array.from({ length: 2 }, (_, index) => emptyDeck(index + 1));
   decks[0]!.squad = initialSquad(catalog);
   let activeDeckId = 1;
   let activeSlot = 0;
@@ -435,6 +437,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
    * 스크롤되는 일이 생긴다. 칸을 누르면 펴지고, 빈 곳을 누르거나 Esc면 접힌다.
    */
   let pickerOpen = false;
+  let quickDeckOpen = false;
+  let quickDeckComplete = false;
   // 겨냥한 칸을 화면으로 끌어오는 것은 **사용자가 칸을 바꿨을 때만** 한다.
   // 결과가 도착해도 편성은 다시 그려지는데, 그때마다 끌어오면 결과를 보던 사람이
   // 편성 쪽으로 튕겨 올라간다.
@@ -603,6 +607,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     }
   };
   const registerCustom = (name: string) => {
+    if (deps.bundledCharacters?.[name]) return;
     const custom = customChars[name];
     if (!custom) return;
     if (!catalogByName.has(name)) {
@@ -613,7 +618,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     settings.characters[name] = customToSettings(custom);
   };
   const customPayload = (): Record<string, { nikke: Record<string, unknown>; skills: unknown[] }> =>
-    Object.fromEntries(Object.entries(customChars).map(([n, c]) => [n, { nikke: c.nikke, skills: c.skills }]));
+    ({ ...Object.fromEntries(Object.entries(customChars).map(([n, c]) => [n, { nikke: c.nikke, skills: c.skills }])),
+      ...deps.bundledCharacters });
 
   // 편성·설정·전투 조건을 localStorage에 저장해 새로고침해도 마지막 상태로 복원한다.
   const STATE_KEY = 'nikke-state-v1';
@@ -880,7 +886,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
               <button type="button" class="roster-import" data-backup-open title="이 브라우저에 쌓인 편성·육성·프리셋을 파일 한 장으로 뜨고, 다시 부어 되살립니다. 기기를 옮길 때 씁니다">백업</button>
               <button type="button" class="roster-import danger" data-reset-all title="편성·설정·CSV 로스터·추가한 니케·저장된 결과를 모두 지우고 처음 상태로 되돌립니다">완전 초기화</button>
               <label class="toggle-field mode-toggle" title="다른 덱에서 이미 만져 둔 개별 설정을 편성할 때 그대로 가져옵니다"><input id="carry-settings" type="checkbox" checked /><span class="toggle"></span><span>설정 이어받기</span></label>
-              <label class="toggle-field mode-toggle"><input id="squad-mode" type="checkbox" /><span class="toggle"></span><span>5덱 모드</span></label>
+              <label class="toggle-field mode-toggle"><input id="squad-mode" type="checkbox" /><span class="toggle"></span><span data-deck-mode-label>단일덱 모드</span></label>
             </div>
             <p class="roster-note" data-roster-note hidden></p>
           </div>
@@ -888,11 +894,12 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
           <div class="deck-controls">
             <button type="button" class="burst-order-open" data-burst-order-open title="사이클마다 1버·2버·3버를 누가 쓸지 직접 정합니다. 정한 만큼만 따르고 그 뒤는 평소 순서로 돌아갑니다"><span class="burst-order-mark" aria-hidden="true">1·2·3</span><span>버스트 순서</span><b class="burst-order-badge" data-burst-order-badge hidden></b></button>
             <button type="button" class="burst-order-open" data-abbrev-open title="각 니케의 앞글자를 이어 적어 한 번에 편성합니다 (예: 리센홍모라)"><span class="burst-order-mark" aria-hidden="true">가나다</span><span>이름으로 편성입력</span></button>
+            <button type="button" class="burst-order-open" data-quick-decks-open>빠른덱편성</button>
             <span class="deck-moves" data-deck-moves hidden></span>
             <button type="button" class="deck-restore" data-deck-restore hidden title="이 덱 전원의 육성을 불러온 값으로 되돌립니다. 컨트롤·버스트 운용은 그대로 둡니다">덱 육성 되돌리기</button>
-            <button type="button" class="deck-restore" data-deck-restore-all hidden title="다섯 덱 전원의 육성을 불러온 값으로 되돌립니다. 컨트롤·버스트 운용은 그대로 둡니다">5덱 육성 되돌리기</button>
+            <button type="button" class="deck-restore" data-deck-restore-all hidden title="전체 덱 전원의 육성을 불러온 값으로 되돌립니다. 컨트롤·버스트 운용은 그대로 둡니다">전체 덱 육성 되돌리기</button>
             <button type="button" class="deck-clear" data-deck-clear title="지금 보고 있는 덱의 편성과 개별 설정을 비웁니다">덱 비우기</button>
-            <button type="button" class="deck-clear" data-deck-clear-all hidden title="다섯 덱의 편성·개별 설정·이름을 한 번에 비웁니다">5덱 비우기</button>
+            <button type="button" class="deck-clear" data-deck-clear-all hidden title="전체 덱의 편성·개별 설정·이름을 한 번에 비웁니다">전체 덱 비우기</button>
           <div class="deck-copy" data-deck-copy hidden>
             <button type="button" class="deck-copy-open" data-deck-copy-open>현재 덱 복사</button>
             <div class="deck-copy-panel" data-deck-copy-panel hidden>
@@ -1333,6 +1340,16 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         </div>
       </div>
 
+      <div class="custom-modal" data-quick-decks-modal hidden>
+        <div class="custom-card quick-decks-card" role="dialog" aria-modal="true" aria-label="빠른덱편성">
+          <div class="custom-head"><h2>빠른덱편성</h2><button type="button" class="custom-close" data-quick-decks-close aria-label="빠른덱편성 닫기">✕</button></div>
+          <p class="custom-desc">빈자리를 덱 순서대로 채웁니다. 같은 니케는 다른 덱에 다시 넣을 수 있습니다. 초상화의 네모 숫자는 편성된 덱 번호입니다. 변경은 바로 저장됩니다.</p>
+          <div data-quick-decks-slots></div>
+          <p data-quick-decks-status aria-live="polite"></p>
+          <div data-quick-decks-picker></div>
+        </div>
+      </div>
+
       <div class="custom-modal" data-share-modal hidden>
         <div class="custom-card share-card" role="dialog" aria-label="프리셋 / 조합 공유">
           <div class="custom-head"><h2>프리셋 / 조합 공유</h2><button type="button" class="custom-close" data-share-close aria-label="닫기">✕</button></div>
@@ -1340,7 +1357,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
           <div class="share-scope" data-share-scope>
             <span class="share-scope-label">범위</span>
             <button type="button" class="share-scope-pick is-on" data-share-scope-pick="one">이 덱만</button>
-            <button type="button" class="share-scope-pick" data-share-scope-pick="all">5덱 전부</button>
+            <button type="button" class="share-scope-pick" data-share-scope-pick="all">모든 덱</button>
             <span class="share-scope-note" data-share-scope-note></span>
           </div>
           ${SHARE_API ? '<div class="share-tabs" data-share-tabs></div>' : ''}
@@ -1528,6 +1545,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   const timelinePanel = element<HTMLElement>(root, '[data-timeline-panel]');
   // 타임라인은 «계산 결과가 있는가»와 «지금 계산기 화면인가» 둘 다 만족할 때만 보인다.
   let timelineHasContent = false;
+  let timelineSelection: Set<number> | null = null;
   const timelineBody = element<HTMLElement>(root, '[data-timeline-body]');
   const coreToggle = element<HTMLInputElement>(root, '#has-core');
   const corePxInput = element<HTMLInputElement>(root, '#core-px');
@@ -1618,6 +1636,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   };
 
   const renderDeckTabs = () => {
+    element<HTMLElement>(root, '[data-deck-mode-label]').textContent = fiveDeckMode ? '여러덱 모드' : '단일덱 모드';
     deckTabs.replaceChildren();
     for (const deck of decks) {
       // 칸 하나를 감싼다. 연필을 단추 **바깥에** 두면 그것이 여섯 번째 격자 칸이 되어
@@ -1742,6 +1761,49 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       renderDeckTabs();
       renderSquad();
     };
+    const add = document.createElement('button');
+    add.textContent = '+ 덱 추가';
+    add.type = 'button';
+    add.className = 'deck-move';
+    add.dataset.deckAdd = '';
+    add.addEventListener('click', () => {
+      const regen = readDeckRegen();
+      const core = readDeckCore();
+      const id = decks.length + 1;
+      decks.push(emptyDeck(id));
+      activeDeckId = id;
+      activeSlot = 0;
+      renderDeckRegen({ ...regen, [id]: Number(element<HTMLInputElement>(root, '#burst-regen').value) });
+      renderDeckCore({ ...core, [id]: coreToggle.checked });
+      closeDeckCopy();
+      saveState(); renderDeckTabs(); renderSquad();
+    });
+    const remove = document.createElement('button');
+    remove.textContent = '현재 덱 삭제';
+    remove.type = 'button';
+    remove.className = 'deck-move';
+    remove.dataset.deckRemove = '';
+    remove.disabled = decks.length <= 2;
+    confirmTwice(remove, () => {
+      if (decks.length <= 2) return;
+      const regen = readDeckRegen();
+      const core = readDeckCore();
+      decks.splice(decks.findIndex((deck) => deck.id === activeDeckId), 1);
+      const nextRegen: Record<number, number> = {};
+      const nextCore: Record<number, boolean> = {};
+      decks.forEach((deck, index) => {
+        nextRegen[index + 1] = regen[deck.id] ?? 2;
+        nextCore[index + 1] = core[deck.id] ?? false;
+        deck.id = index + 1;
+      });
+      activeDeckId = Math.min(activeDeckId, decks.length);
+      activeSlot = 0;
+      buffTargetsByDeck.clear();
+      renderDeckRegen(nextRegen); renderDeckCore(nextCore);
+      closeDeckCopy();
+      saveState(); renderDeckTabs(); renderSquad();
+    }, { armed: '한 번 더 누르면 삭제' });
+    moves.append(add, remove);
     for (const [delta, label, title] of [
       [-1, '‹', '앞으로'], [1, '›', '뒤로'],
     ] as const) {
@@ -1853,6 +1915,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   const prefetchBuffTargets = () => {
     clearTimeout(prefetchTimer);
     prefetchTimer = setTimeout(async () => {
+      if (!root.isConnected || !root.contains(squadGrid)) return;
       // 정식 계산이 도는 중이면 워커를 뺏지 않는다 — 끝나면 어차피 채워진다.
       if (prefetching || submit.disabled) return;
       const deck = activeDeck();
@@ -1862,6 +1925,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       renderSquad();
       try {
         await prepared;
+        if (!root.isConnected || !root.contains(squadGrid)) return;
         const custom = customPayload();
         const request = requestForDeck(deck, readBattle(),
           Object.keys(custom).length > 0 ? custom : undefined);
@@ -1876,6 +1940,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
           result = await client.simulate(request);
           cache.set(key, result);
         }
+        if (!root.isConnected || !root.contains(squadGrid)) return;
         // 기다리는 사이 편성이 바뀌었을 수 있다 — 서명이 맞을 때만 반영한다.
         const now = activeDeck();
         if (now.id !== deck.id || deckSignature(now) !== deckSignature(deck)) return;
@@ -1889,7 +1954,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       } finally {
         prefetching = false;
         prefetchingDeckId = undefined;
-        renderSquad();
+        if (root.isConnected && root.contains(squadGrid)) renderSquad();
       }
     }, 700);
   };
@@ -2596,7 +2661,39 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   let squadPowerTimer: ReturnType<typeof setTimeout> | undefined;
   const scheduleSquadPower = () => {
     clearTimeout(squadPowerTimer);
-    squadPowerTimer = setTimeout(() => { void refreshSquadPower(); }, 60);
+    squadPowerTimer = setTimeout(() => {
+      if (root.isConnected && root.contains(squadGrid)) void refreshSquadPower();
+    }, 60);
+  };
+
+  const infoButton = (char: CharacterMeta) => {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'character-info-button';
+    button.textContent = 'i'; button.ariaLabel = `${char.name} 정보`;
+    button.dataset.characterInfo = char.name;
+    button.addEventListener('pointerdown', e => e.stopPropagation());
+    button.addEventListener('click', e => {
+      e.stopPropagation();
+      const deck = activeDeck();
+      const defaults = settings.characters[char.name];
+      const own = deck.characters[char.name] ?? roster[char.name];
+      const custom = customPayload()[char.name];
+      openCharacterInfo({ host: root, char, info: char.info ?? (custom ? customSkillInfo(custom.skills, custom.nikke) : undefined),
+        favorite: own?.collection?.favorite ?? defaults?.collection.favorite ?? 0,
+        fictional: Boolean(custom?.nikke.fabricated),
+        rarity: defaults?.rarity, levels: own?.skillLevels ?? defaults?.skillLevels ?? { '1': 10, '2': 10, '3': 10 },
+        locked: Boolean(defaults?.skillLevelsLocked), inDeck: deck.squad.includes(char.name),
+        onChange: levels => {
+          deck.characters[char.name] = { ...deck.characters[char.name], skillLevels: levels };
+          saveState(); renderSquad();
+        },
+        onClose: () => {
+          const target = button.isConnected ? button : [...root.querySelectorAll<HTMLButtonElement>('[data-character-info]')].find(b => b.dataset.characterInfo === char.name);
+          target?.focus({ preventScroll: true });
+        },
+      });
+    });
+    return button;
   };
 
   const renderSquad = () => {
@@ -2676,7 +2773,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       }
       // 편성 카드에도 같은 딱지를 붙인다 — 목록에서 보고 고른 그 표시가 칸에서도
       // 보여야 «이 사람이 그 사람»이라는 것이 이어진다.
-      if (char) appendGrowthBadge(portrait, char.name, 'top');
+      if (char) { appendGrowthBadge(portrait, char.name, 'top'); portrait.append(infoButton(char)); }
       const identity = document.createElement('div');
       identity.className = 'slot-identity';
 
@@ -3183,7 +3280,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   };
   const renderDeckRegen = (values: Record<number, number>) => {
     deckRegenBox.replaceChildren();
-    for (let id = 1; id <= 5; id += 1) {
+    for (const { id } of decks) {
       const label = document.createElement('label');
       label.append(createText('span', t('덱 {n}', { n: id })));
       const wrap = document.createElement('div');
@@ -3193,7 +3290,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       input.min = '0';
       input.max = '20';
       input.step = '0.1';
-      input.value = String(values[id] ?? 2);
+      input.value = String(values[id] ?? Number(element<HTMLInputElement>(root, '#burst-regen').value));
       input.dataset.deckRegenInput = String(id);
       wrap.append(input, createText('em', '초'));
       label.append(wrap);
@@ -3204,12 +3301,12 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     const on = values !== undefined && Object.keys(values).length > 0;
     deckRegenToggle.checked = on;
     deckRegenBox.hidden = !on;
-    renderDeckRegen(values ?? { 1: fallback, 2: fallback, 3: fallback, 4: fallback, 5: fallback });
+    renderDeckRegen(values ?? Object.fromEntries(decks.map(({ id }) => [id, fallback])));
   };
   deckRegenToggle.addEventListener('change', () => {
     if (deckRegenToggle.checked) {
       const now = Number(element<HTMLInputElement>(root, '#burst-regen').value);
-      renderDeckRegen({ 1: now, 2: now, 3: now, 4: now, 5: now });
+      renderDeckRegen(Object.fromEntries(decks.map(({ id }) => [id, now])));
     }
     deckRegenBox.hidden = !deckRegenToggle.checked;
     saveState();
@@ -3231,12 +3328,12 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   };
   const renderDeckCore = (values: Record<number, boolean>) => {
     deckCoreBox.replaceChildren();
-    for (let id = 1; id <= 5; id += 1) {
+    for (const { id } of decks) {
       const label = document.createElement('label');
       label.className = 'inline-check';
       const box = document.createElement('input');
       box.type = 'checkbox';
-      box.checked = values[id] ?? false;
+      box.checked = values[id] ?? coreToggle.checked;
       box.dataset.deckCoreInput = String(id);
       box.addEventListener('change', () => { saveState(); refreshBattleSummary(); });
       label.append(box, createText('span', t('덱 {n}', { n: id })));
@@ -3247,13 +3344,13 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     const on = values !== undefined && Object.keys(values).length > 0;
     deckCoreToggle.checked = on;
     deckCoreBox.hidden = !on;
-    renderDeckCore(values ?? { 1: fallback, 2: fallback, 3: fallback, 4: fallback, 5: fallback });
+    renderDeckCore(values ?? Object.fromEntries(decks.map(({ id }) => [id, fallback])));
   };
   deckCoreToggle.addEventListener('change', () => {
     // 켜는 순간 지금 값으로 다섯을 채운다 — 「켰더니 값이 사라졌다」가 없게.
     if (deckCoreToggle.checked) {
       const now = coreToggle.checked;
-      renderDeckCore({ 1: now, 2: now, 3: now, 4: now, 5: now });
+      renderDeckCore(Object.fromEntries(decks.map(({ id }) => [id, now])));
     }
     deckCoreBox.hidden = !deckCoreToggle.checked;
     saveState();
@@ -3675,7 +3772,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     if (!decksInScope().some((deck) => deck.squad.some(Boolean))) {
       showShareMsg(shareScope === 'all'
         ? '편성이 비어 있어 저장할 것이 없습니다.'
-        : `덱 ${activeDeckId}이 비어 있습니다. 다른 덱을 담으려면 위에서 «5덱 전부»를 고르세요.`);
+        : `덱 ${activeDeckId}이 비어 있습니다. 다른 덱을 담으려면 위에서 «모든 덱»를 고르세요.`);
       return;
     }
     if (presets.length >= PRESET_MAX && !presets.some((p) => p.name === name)) {
@@ -3701,7 +3798,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     presetMemo.value = '';
     disarmOverwrite();
     showShareMsg(`«${name}» ${old ? '을(를) 덮어썼습니다' : '으로 저장했습니다'}`
-      + `(${shareScope === 'all' ? '5덱 전부' : `덱 ${activeDeckId}만`}).`
+      + `(${shareScope === 'all' ? '모든 덱' : `덱 ${activeDeckId}만`}).`
       + ' 편성만 담기므로 스펙이 바뀌어도 그대로 씁니다.', true);
   });
 
@@ -3843,7 +3940,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       button.classList.toggle('is-on', button.dataset.shareScopePick === shareScope);
     }
     scopeNote.textContent = shareScope === 'all'
-      ? '5덱을 한 코드에 담고, 받으면 판 전체가 바뀝니다.'
+      ? '모든 덱을 한 코드에 담고, 받으면 판 전체가 바뀝니다.'
       : `덱 ${activeDeckId}만 담고, 받으면 덱 ${activeDeckId}에만 들어갑니다.`;
   };
 
@@ -3948,6 +4045,13 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     try {
       // 카탈로그 이름을 넘겨야 해시에서 캐릭터를 되찾는다(커스텀 니케도 카탈로그에 있다).
       const payload = decodeShareCode(shareCodeFrom(text), catalog.map((char) => char.name));
+      if (scope === 'all') {
+        const regen = readDeckRegen(), core = readDeckCore();
+        const count = Math.max(2, payload.decks.length);
+        while (decks.length < count) decks.push(emptyDeck(decks.length + 1));
+        decks.splice(count);
+        renderDeckRegen(regen); renderDeckCore(core);
+      }
       const into: ApplyTarget = scope === 'all' ? 'all' : { into: activeDeckIndex(), from };
       const landed = scope === 'all' ? 1 : activeDeckId;
       // 스펙은 내 것을 쓴다 — CSV 로스터를 넣어 뒀으면 그대로 얹힌다.
@@ -3983,7 +4087,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         // 말고는 꺼낼 길이 없었다(피드백 2026-09-05).
         renderDeckPick({ text, at: from });
         showShareMsg(`코드에 덱이 ${carried}개 들어 있어 ${from + 1}번째 덱을 덱 ${landed}에 넣었습니다`
-          + `${missing}. 아래에서 다른 덱을 고를 수 있고, 판 전체를 받으려면 위에서 «5덱 전부»를 고르세요.`);
+          + `${missing}. 아래에서 다른 덱을 고를 수 있고, 판 전체를 받으려면 위에서 «모든 덱»를 고르세요.`);
       } else {
         renderDeckPick(null);
         showShareMsg(`덱 ${landed}에 적용했습니다${missing}. 다른 덱은 그대로입니다.`,
@@ -4067,7 +4171,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         parts.push(damageCsv({ ...result, timeline }, names, note));
       }
       downloadImage(csvBlob(parts.join('\r\n\r\n')),
-        csvFileName(batch.decks.length > 1 ? '5덱' : `덱 ${batch.decks[0]?.deckId ?? 1}`));
+        csvFileName(batch.decks.length > 1 ? `${batch.decks.length}덱` : `덱 ${batch.decks[0]?.deckId ?? 1}`));
       status.textContent = coarseOnly
         ? '정밀 수치 CSV를 내려받았습니다 (1초 단위 — 0.1초 표는 다시 계산해야 나옵니다).'
         : '정밀 수치 CSV를 내려받았습니다 (0.1초 단위).';
@@ -4182,7 +4286,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     const header = document.createElement('div');
     header.className = 'result-header';
     const copy = document.createElement('div');
-    copy.append(createText('h2', t(batch.decks.length > 1 ? '5덱 전투 결과' : '전투 결과')));
+    copy.append(createText('h2', t(batch.decks.length > 1 ? `${batch.decks.length}덱 전투 결과` : '전투 결과')));
     const summary = document.createElement('div');
     summary.className = 'total-block';
     const total = createText('strong', dmg(batch.total));
@@ -4248,7 +4352,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     if (batch.decks.length > 1) {
       const compareLabel = document.createElement('label');
       compareLabel.className = 'inline-check detail-toggle';
-      compareLabel.title = '막대를 다섯 덱 통틀어 딜이 가장 높은 니케 기준으로 그립니다';
+      compareLabel.title = '막대를 모든 덱 통틀어 딜이 가장 높은 니케 기준으로 그립니다';
       const compareBox = document.createElement('input');
       compareBox.type = 'checkbox';
       compareBox.dataset.compareDecks = '';
@@ -4371,8 +4475,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     }
     resultPanel.append(detail);
 
-    // 타임라인도 한 번에 하나만 본다 — 다섯을 세로로 쌓으면 어느 덱을 보고 있는지
-    // 스크롤 중에 놓친다. 탭은 결과와 같이 **덱 번호 순서 그대로** 선다.
+    // 덱별 상세와 같은 축에 겹친 덱 비교를 탭으로 전환한다.
     timelineBody.replaceChildren();
     const blocks = new Map<number, HTMLElement>();
     let sharedPeak = 0;
@@ -4395,34 +4498,42 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       if (timelineBlock) blocks.set(entry.deckId, timelineBlock);
     }
     if (blocks.size > 1) {
+      const comparison = createTimelineComparison(batch.decks);
+      if (comparison) blocks.set(0, comparison);
       const tabs = document.createElement('div');
       tabs.className = 'deck-result-tabs timeline-tabs';
       tabs.dataset.timelineTabs = '';
       const stage = document.createElement('div');
       stage.dataset.timelineStage = '';
-      const buttons = new Map<number, HTMLButtonElement>();
-      const show = (deckId: number) => {
-        for (const [id, button] of buttons) {
-          button.classList.toggle('is-on', id === deckId);
-          button.setAttribute('aria-pressed', String(id === deckId));
+      if (timelineSelection === null) timelineSelection = new Set([shownDeckId !== null && blocks.has(shownDeckId)
+        ? shownDeckId : [...blocks.keys()][0]!]);
+      const show = () => {
+        stage.replaceChildren();
+        for (const [id, block] of blocks) {
+          if (!timelineSelection!.has(id)) continue;
+          const section = document.createElement('section');
+          section.className = 'timeline-selected-deck';
+          section.append(createText('h3', id === 0 ? '덱끼리 견주기' : `덱 ${id}`), block);
+          stage.append(section);
         }
-        stage.replaceChildren(blocks.get(deckId)!);
+        if (!stage.children.length) stage.append(createText('p', '위에서 표시할 덱을 선택하세요.'));
       };
       for (const deckId of blocks.keys()) {
-        const tab = document.createElement('button');
-        tab.type = 'button';
-        tab.className = 'deck-result-tab';
-        tab.dataset.timelineTab = String(deckId);
-        tab.append(createText('b', `덱 ${deckId}`));
-        tab.addEventListener('click', () => show(deckId));
-        buttons.set(deckId, tab);
-        tabs.append(tab);
+        const label = document.createElement('label');
+        label.className = 'timeline-deck-pick';
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.dataset.timelineTab = String(deckId);
+        check.checked = timelineSelection.has(deckId);
+        check.addEventListener('change', () => {
+          if (check.checked) timelineSelection!.add(deckId); else timelineSelection!.delete(deckId);
+          show();
+        });
+        label.append(check, createText('span', deckId === 0 ? '덱끼리 견주기' : `덱 ${deckId}`));
+        tabs.append(label);
       }
       timelineBody.append(tabs, stage);
-      // 결과 판과 같은 덱을 편다 — 위아래가 서로 다른 덱을 보고 있으면 읽는 사람이
-      // 둘을 한 덱으로 착각한다.
-      show(shownDeckId !== null && blocks.has(shownDeckId)
-        ? shownDeckId : [...blocks.keys()][0]!);
+      show();
     } else {
       for (const block of blocks.values()) timelineBody.append(block);
     }
@@ -4723,13 +4834,13 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     renderRosterGrid();
   });
 
-  // 5덱 비우기 — 다섯을 한 번에 지우는 일이라 «한 번 더 누르면» 지운다. 창을 띄우는
+  // 전체 덱 비우기 — 다섯을 한 번에 지우는 일이라 «한 번 더 누르면» 지운다. 창을 띄우는
   // 대신 단추가 스스로 확인을 받는다(잘못 눌렀으면 다른 데를 누르면 그만이다).
   const clearAllButton = element<HTMLButtonElement>(root, '[data-deck-clear-all]');
   let clearAllArmed = false;
   const disarmClearAll = () => {
     clearAllArmed = false;
-    clearAllButton.textContent = '5덱 비우기';
+    clearAllButton.textContent = '전체 덱 비우기';
     clearAllButton.classList.remove('is-armed');
   };
   clearAllButton.addEventListener('click', () => {
@@ -4753,12 +4864,12 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     renderDeckTabs();
     renderSquad();
     renderRosterGrid();
-    status.textContent = '다섯 덱을 모두 비웠습니다.';
+    status.textContent = '모든 덱을 비웠습니다.';
   });
   clearAllButton.addEventListener('blur', disarmClearAll);
 
   // 덱 통째로 되돌리기 — 「한 명씩 다섯 번」을 없앤다(피드백 2026-09-05).
-  // 5덱 비우기와 같은 자리·같은 «한 번 더 누르면» 방식으로 둔다: 손이 이미 그 규칙을
+  // 전체 덱 비우기와 같은 자리·같은 «한 번 더 누르면» 방식으로 둔다: 손이 이미 그 규칙을
   // 알고 있고, 되돌리기도 만져 둔 값을 통째로 물리는 일이라 값이 같다.
   const restoreDeckButton = element<HTMLButtonElement>(root, '[data-deck-restore]');
   const restoreAllButton = element<HTMLButtonElement>(root, '[data-deck-restore-all]');
@@ -4782,8 +4893,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     saveState();
     renderSquad();
     status.textContent = done > 0
-      ? `다섯 덱에서 ${done}자리의 육성을 ${rosterWhere()} 값으로 되돌렸습니다.`
-      : '다섯 덱에 불러온 값이 있는 니케가 없습니다.';
+      ? `전체 덱에서 ${done}자리의 육성을 ${rosterWhere()} 값으로 되돌렸습니다.`
+      : '전체 덱에 불러온 값이 있는 니케가 없습니다.';
   }, { armed: '정말 되돌립니다' });
 
   element<HTMLInputElement>(root, '#squad-mode').addEventListener('change', (event) => {
@@ -4796,6 +4907,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       if (picked) {
         [first.squad, picked.squad] = [picked.squad, first.squad];
         [first.characters, picked.characters] = [picked.characters, first.characters];
+        [first.name, picked.name] = [picked.name, first.name];
+        [first.burstSequence, picked.burstSequence] = [picked.burstSequence, first.burstSequence];
       }
     }
     activeDeckId = 1;
@@ -4914,6 +5027,75 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   const rosterDesc = element<HTMLElement>(root, '[data-roster-desc]');
   const pickerPanel = element<HTMLElement>(root, '[data-picker]');
 
+  const quickModal = element<HTMLElement>(root, '[data-quick-decks-modal]');
+  const pickerHome = document.createComment('character picker home');
+  pickerPanel.before(pickerHome);
+  const quickScope = () => fiveDeckMode ? decks : [decks[0]!];
+  const nextQuickSlot = () => {
+    for (const deck of quickScope()) {
+      const slot = deck.squad.findIndex((name) => !name);
+      if (slot >= 0) { activeDeckId = deck.id; activeSlot = slot; quickDeckComplete = false; return; }
+    }
+    quickDeckComplete = true;
+  };
+  const renderQuickSlots = () => {
+    if (!quickDeckOpen) return;
+    const container = element<HTMLElement>(root, '[data-quick-decks-slots]');
+    container.replaceChildren();
+    for (const deck of quickScope()) {
+      const row = document.createElement('div');
+      row.className = 'quick-deck-row';
+      row.append(createText('b', `덱 ${deck.id}`));
+      deck.squad.forEach((name, slot) => {
+        const pick = document.createElement('button');
+        pick.type = 'button';
+        pick.dataset.quickSlot = `${deck.id}:${slot}`;
+        pick.textContent = name || `${slot + 1} · 빈자리`;
+        pick.classList.toggle('is-on', !quickDeckComplete && activeDeckId === deck.id && activeSlot === slot);
+        pick.addEventListener('click', () => {
+          activeDeckId = deck.id; activeSlot = slot; quickDeckComplete = false;
+          renderDeckTabs(); renderSquad(); renderRosterGrid();
+          rosterSearch.focus({ preventScroll: true });
+        });
+        row.append(pick);
+      });
+      container.append(row);
+    }
+    element<HTMLElement>(root, '[data-quick-decks-status]').textContent = quickDeckComplete
+      ? '편성을 모두 채웠습니다. 수정할 자리를 누르거나 창을 닫으세요.'
+      : `다음 자리: 덱 ${activeDeckId} · ${activeSlot + 1}번`;
+  };
+  const closeQuickDecks = () => {
+    quickDeckOpen = false;
+    quickModal.hidden = true;
+    pickerHome.after(pickerPanel);
+    pickerPanel.classList.remove('is-quick-picker');
+    pickerOpen = false; pickerPanel.hidden = true;
+    renderDeckTabs(); renderSquad(); renderRosterGrid();
+    element<HTMLButtonElement>(root, '[data-quick-decks-open]').focus();
+  };
+  element<HTMLButtonElement>(root, '[data-quick-decks-open]').addEventListener('click', () => {
+    quickDeckOpen = true;
+    nextQuickSlot();
+    element<HTMLElement>(root, '[data-quick-decks-picker]').append(pickerPanel);
+    pickerPanel.classList.add('is-quick-picker');
+    quickModal.hidden = false;
+    pickerOpen = true; pickerPanel.hidden = false;
+    renderDeckTabs(); renderSquad(); renderRosterGrid();
+    rosterSearch.focus();
+  });
+  element<HTMLButtonElement>(root, '[data-quick-decks-close]').addEventListener('click', closeQuickDecks);
+  quickModal.addEventListener('click', (event) => { if (event.target === quickModal) closeQuickDecks(); });
+  quickModal.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { event.stopPropagation(); closeQuickDecks(); }
+    if (event.key === 'Tab') {
+      const focusable = [...quickModal.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]')].filter(node => node.getClientRects().length > 0);
+      const first = focusable[0], last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    }
+  });
+
   /** 고르기 판을 펴거나 접는다. 접으면 겨냥한 칸 표시도 함께 풀린다. */
   const setPickerOpen = (on: boolean) => {
     if (pickerOpen === on) { if (on) { renderSquad(); renderRosterGrid(); } return; }
@@ -4924,7 +5106,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   };
 
   element<HTMLButtonElement>(root, '[data-picker-close]')
-    .addEventListener('click', () => setPickerOpen(false));
+    .addEventListener('click', () => quickDeckOpen ? closeQuickDecks() : setPickerOpen(false));
 
   // 빈 곳을 누르면 접는다. 편성·판·덱 줄 안쪽은 «고르는 중»이라 그대로 둔다.
   //
@@ -4943,7 +5125,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   root.addEventListener('click', (event) => {
     const startedInside = pressedInside;
     pressedInside = false;   // 이 click 한 번에만 쓴다
-    if (!pickerOpen || startedInside) return;
+    if (!pickerOpen || startedInside || root.querySelector('.character-info-dialog[open]')) return;
     const hit = event.target as HTMLElement | null;
     if (!hit || hit.closest(KEEP_OPEN)) return;
     setPickerOpen(false);
@@ -5299,6 +5481,20 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         temp.title = '스킬이 공개되지 않아 임의로 창작한 값으로 계산합니다';
         portrait.append(temp);
       }
+      if (quickDeckOpen) {
+        const badges = document.createElement('div');
+        badges.className = 'quick-deck-badges';
+        for (const other of quickScope()) {
+          if (!other.squad.includes(char.name)) continue;
+          const mark = document.createElement('span');
+          mark.dataset.quickDeckBadge = String(other.id);
+          mark.textContent = String(other.id);
+          mark.title = `덱 ${other.id}에 편성됨`;
+          badges.append(mark);
+        }
+        portrait.append(badges);
+        if (quickDeckComplete) cell.disabled = true;
+      }
       cell.append(
         portrait,
         createText('strong', char.preview ? `${char.name} (임시)` : char.name),
@@ -5317,10 +5513,18 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         });
         cell.addEventListener('dragend', () => cell.classList.remove('is-dragging'));
       }
-      rosterGrid.append(cell);
+      const entry = document.createElement('div');
+      entry.className = 'roster-entry';
+      const infoAnchor = document.createElement('div');
+      infoAnchor.className = 'roster-info-anchor';
+      infoAnchor.append(infoButton(char));
+      entry.append(cell, infoAnchor);
+      rosterGrid.append(entry);
     }
     rosterEmpty.hidden = shown.length > 0;
     updatePickerTarget();
+    renderQuickSlots();
+    if (quickDeckOpen && !quickModal.contains(document.activeElement)) rosterSearch.focus({ preventScroll: true });
   };
 
   /**
@@ -5345,6 +5549,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   });
 
   const pickCharacter = (name: string, targetSlot = activeSlot) => {
+    if (quickDeckOpen && quickDeckComplete) return;
     const deck = activeDeck();
     const slot = Math.max(0, Math.min(4, targetSlot));
     const previous = deck.squad[slot] ?? '';
@@ -5361,12 +5566,14 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     // 연달아 채울 수 있게 다음 빈 칸으로 옮겨 간다. 다 찼으면 방금 넣은 칸에 머문다.
     const next = deck.squad.findIndex((member) => !member);
     activeSlot = next < 0 ? slot : next;
-    pullActiveSlot = true;
+    if (quickDeckOpen) nextQuickSlot();
+    pullActiveSlot = !quickDeckOpen;
     showErrors([]);
     saveState();
     renderDeckTabs();
     renderSquad();
     renderRosterGrid();
+    if (quickDeckOpen) rosterSearch.focus({ preventScroll: true });
     // (임시) 캐릭터는 넣는 순간 바로 알린다 — 결과까지 가서야 알면 이미 늦다.
     if (catalogByName.get(name)?.preview) {
       status.textContent = `${name}은(는) 아직 (임시) 등록입니다 — 스킬이 공개되지 않아 `
@@ -6320,6 +6527,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     const usable = player.decks.filter(enikkDeckUsable);
     if (usable.length === 0) return;
     for (const deck of decks) { deck.squad = ['', '', '', '', '']; deck.characters = {}; }
+    while (decks.length < Math.min(5, usable.length)) decks.push(emptyDeck(decks.length + 1));
+    renderDeckRegen(readDeckRegen()); renderDeckCore(readDeckCore());
     usable.slice(0, 5).forEach((source, index) => {
       const deck = decks[index]!;
       deck.squad = [...source.squad];
@@ -7214,7 +7423,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   };
   const renderCustomList = () => {
     customList.replaceChildren();
-    const names = Object.keys(customChars);
+    const names = Object.keys(customChars).filter(name => !deps.bundledCharacters?.[name]);
     if (names.length === 0) return;
     customList.append(createText('p', '추가된 니케', 'custom-list-title'));
     for (const name of names) {
@@ -7268,6 +7477,9 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   element<HTMLButtonElement>(root, '[data-custom-submit]').addEventListener('click', () => {
     try {
       const custom = parseCustomInput(customJson.value);
+      if (deps.bundledCharacters?.[custom.name]) {
+        throw new Error("이미 기본 목록에 등록된 임시 캐릭터입니다. 다른 이름으로 등록해 주세요.");
+      }
       customChars[custom.name] = custom;
       saveCustom();
       registerCustom(custom.name);
@@ -7310,6 +7522,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       carryToggle.checked = carryOverSettings;
     }
     if (Array.isArray(savedState.decks)) {
+      decks.splice(0, decks.length, ...Array.from({ length: Math.max(2, savedState.decks.length) }, (_, i) => emptyDeck(i + 1)));
       savedState.decks.forEach((saved, index) => {
         const deck = decks[index];
         if (!deck || !saved) return;
@@ -7318,6 +7531,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         else delete deck.name;
         deck.squad = (saved.squad ?? ['', '', '', '', ''])
           .map((name) => (name && catalogByName.has(name) ? name : ''));
+        if (saved.burstSequence) deck.burstSequence = saved.burstSequence;
         deck.characters = {};
         for (const [name, override] of Object.entries(saved.characters ?? {})) {
           if (deck.squad.includes(name)) deck.characters[name] = override;
@@ -7334,7 +7548,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     }
 
     const savedActive = savedState.activeDeckId;
-    if (typeof savedActive === 'number' && savedActive >= 1 && savedActive <= 5) {
+    if (typeof savedActive === 'number' && savedActive >= 1 && savedActive <= decks.length) {
       activeDeckId = savedActive;
     }
     if (savedState.fiveDeckMode) {
@@ -7423,7 +7637,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     ];
     const custom = customPayload();
     const requests = selectedDecks.map((deck) => ({
-      deck,
+      deck: { ...deck },
       request: requestForDeck(deck, battle, Object.keys(custom).length > 0 ? custom : undefined),
     }));
     for (const { deck, request } of requests) {
