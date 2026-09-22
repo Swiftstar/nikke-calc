@@ -32,6 +32,13 @@ function fakeFetch(reply: unknown, status = 200) {
 }
 
 describe('share server client', () => {
+  it('keeps long range summaries within the upload limit without shortening the actual code',async()=>{
+    const {fetcher,calls}=fakeFetch({item:{id:'a1'},existed:false});
+    const input={kind:'boss' as const,name:'test',by:'',auto:'구간 '.repeat(100),code:'NK3-range-code'};
+    await new ShareServer('https://share.example.com',fetcher).upload(input);
+    const sent=JSON.parse(String(calls[0]!.init!.body));
+    expect(sent.auto.length).toBe(160);expect(sent.code).toBe(input.code);expect(input.auto.length).toBe(300);
+  });
   it('asks for one kind and fills in what the server left out', async () => {
     const { fetcher, calls } = fakeFetch({ items: [{ id: 'a1' }] });
     const result = await new ShareServer('https://share.example.com/', fetcher).list('boss');
@@ -69,6 +76,27 @@ describe('share server client', () => {
     expect(item.reply).toBe('고쳤습니다.');
   });
 
+  it('레이드 랭킹은 비밀번호가 있을 때만 어드민 길로 간다', async () => {
+    const { fetcher, calls } = fakeFetch({ raid: { id: 'r1' }, entries: [] });
+    const server = new ShareServer('https://share.example.com', fetcher);
+    await server.raidBoard('r1');
+    expect(calls[0]!.url).toBe('https://share.example.com/raid/board?id=r1');
+    expect(calls[0]!.init).toBeUndefined();
+    await server.raidBoard('r1', 'pw');
+    expect(calls[1]!.url).toBe('https://share.example.com/raid/board');
+    expect(JSON.parse(String(calls[1]!.init!.body))).toEqual({ id: 'r1', password: 'pw' });
+  });
+
+  it('기록 제출은 스펙까지 한 몸으로 보낸다', async () => {
+    const { fetcher, calls } = fakeFetch({ entry: { eid: 'e1', decks: [], total: 1, engine: '', at: '' }, kept: false });
+    const result = await new ShareServer('https://share.example.com', fetcher).submitRaidEntry({
+      id: 'r1', openid: '1234', name: 'MORIS', area: 83, decks: [], total: 1, engine: 'x', spec: { a: 1 },
+    });
+    expect(calls[0]!.url).toBe('https://share.example.com/raid/entry');
+    expect(JSON.parse(String(calls[0]!.init!.body)).spec).toEqual({ a: 1 });
+    expect(result.kept).toBe(false);
+  });
+
   it('falls back to a readable message when the body is not JSON', async () => {
     const fetcher = (async () => new Response('nope', { status: 502 })) as unknown as typeof fetch;
     await expect(new ShareServer('https://share.example.com', fetcher).list('boss'))
@@ -77,8 +105,12 @@ describe('share server client', () => {
 });
 
 describe('auto summaries', () => {
+  it('includes timed effective range weapons, disabled windows and the outside baseline',()=>{
+    const summary=summarizeBattle({...battle,optimalRangeWeapons:['SG'],optimalRangeWindows:[{from:30,to:60,weapons:['AR','MG']},{from:90,to:120,weapons:[]}]});
+    expect(summary).toContain('유효 사거리 30~60초 AR·MG / 90~120초 없음 (구간 밖: SG)');
+  });
   it('reads the battle back as one line', () => {
-    expect(summarizeBattle(battle)).toBe('180초 · 무속성 · 코어 없음 · 난수');
+    expect(summarizeBattle(battle)).toBe('180초 · 샷건 명중 100% · 무속성 · 코어 없음 · 난수');
     expect(summarizeBattle({
       ...battle,
       duration: 90,
@@ -90,7 +122,7 @@ describe('auto summaries', () => {
       immuneWindows: [{ from: 10, to: 20 }],
       elementWindows: [{ from: 30, to: 40, code: '작열' }],
       rngMode: 'expected',
-    })).toBe('90초 · 적 수냉 · 코어 60px · 파츠 · 적정 AR·SMG · 족자 1 · 속저 1 · 기대값');
+    })).toBe('90초 · 샷건 명중 100% · 적 수냉 · 코어 60px · 파츠 · 적정 AR·SMG · 족자 1 · 속저 1 · 기대값');
   });
 
   it('약어 사전과 피드백을 주고받는다', async () => {

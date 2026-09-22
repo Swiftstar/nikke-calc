@@ -153,20 +153,35 @@ def _control_number(value: Any, field: str, minimum: float, maximum: float) -> f
 def _normalize_control(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("컨트롤 설정은 객체여야 합니다")
-    unknown = set(raw) - {"tap_fire", "reload", "cover", "hold"}
+    unknown = set(raw) - {"tap_fire", "reload", "cover", "hold", "bunny_mode"}
     if unknown:
         raise ValueError(f"지원하지 않는 컨트롤: {sorted(unknown)}")
     result: dict[str, Any] = {}
 
+    if "bunny_mode" in raw:
+        if raw["bunny_mode"] not in ("stance", "engage"):
+            raise ValueError("바니 모드는 stance 또는 engage여야 합니다")
+        result["bunny_mode"] = raw["bunny_mode"]
+
     tap = raw.get("tap_fire")
     if tap is not None:
         if not isinstance(tap, dict) or set(tap) - {
-            "rate", "release", "full_charge_interval"
+            "rate", "release", "full_charge_interval", "policy", "reload_at_end"
         } or "rate" not in tap:
-            raise ValueError("톡톡이는 rate와 선택 release/full_charge_interval만 지원합니다")
+            raise ValueError("톡톡이는 rate와 선택 release/full_charge_interval/policy/reload_at_end만 지원합니다")
         normalized_tap = {
             "rate": _control_number(tap["rate"], "tap_fire.rate", 0.1, 20.0),
         }
+        # 버충 톡톡이 — 풀버스트 밖에서만 톡톡이. 기본(always)은 값 자체를 안 싣는다.
+        if "policy" in tap:
+            if tap["policy"] not in ("always", "burst_charge"):
+                raise ValueError("톡톡이 정책은 always 또는 burst_charge여야 합니다")
+            if tap["policy"] == "burst_charge":
+                normalized_tap["policy"] = "burst_charge"
+        if "reload_at_end" in tap:
+            if not isinstance(tap["reload_at_end"], bool):
+                raise ValueError("tap_fire.reload_at_end는 true/false여야 합니다")
+            normalized_tap["reload_at_end"] = tap["reload_at_end"]
         if "release" in tap:
             normalized_tap["release"] = _control_number(
                 tap["release"], "tap_fire.release", 0.0, 1.0
@@ -536,6 +551,33 @@ def normalize_hacks(raw: Any) -> dict[str, Any] | None:
     return cheats if from_config({"cheats": cheats}).on else None
 
 
+def normalize_optimal_range_windows(raw: Any) -> list[dict[str, Any]]:
+    """적정거리 구간 [from, to). 겹친 구간의 무기군은 합집합이다.
+
+    구간 밖은 상시 optimal_range_weapons로 돌아간다. weapons=[]인 구간은
+    상시 설정을 비우며, 구간 목록 자체가 비면 기존 상시 설정을 유지한다.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > 100:
+        raise ValueError("적정거리 설정은 최대 100개 구간의 배열이어야 한다")
+    out = []
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"from", "to", "weapons"}:
+            raise ValueError("적정거리 구간은 from·to·weapons 객체여야 한다")
+        if any(isinstance(item[key], bool) for key in ("from", "to")):
+            raise ValueError("적정거리 구간에는 숫자가 필요하다")
+        try:
+            start, end = _window(item, "적정거리")
+        except OverflowError:
+            raise ValueError("적정거리 구간은 유한한 숫자여야 한다") from None
+        weapons = item["weapons"]
+        if not isinstance(weapons, list) or any(not isinstance(w, str) for w in weapons):
+            raise ValueError("적정거리 무기군은 문자열 배열이어야 한다")
+        out.append({"from": start, "to": end, "weapons": normalize_optimal_range(weapons)})
+    return out
+
+
 def normalize_immune_windows(raw: Any) -> list[list[float]]:
     """족자 — 그 구간 동안 평타가 적중하지 않는다."""
     if raw is None:
@@ -543,6 +585,34 @@ def normalize_immune_windows(raw: Any) -> list[list[float]]:
     if not isinstance(raw, list):
         raise ValueError("족자 설정은 배열이어야 한다")
     return [list(_window(item, "족자")) for item in raw]
+
+
+def normalize_defense_rate_windows(raw: Any) -> list[list[float]]:
+    """방어율 구간 → [시작, 끝, 감소율%]. 생략한 감소율은 60%다."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > 100:
+        raise ValueError("방어율 설정은 최대 100개 구간의 배열이어야 한다")
+    result = []
+    for item in raw:
+        if isinstance(item, (list, tuple)) and len(item) == 3:
+            item = dict(zip(("from", "to", "rate"), item))
+        if not isinstance(item, dict) or set(item) - {"from", "to", "rate"}:
+            raise ValueError("방어율 구간은 from·to·rate 객체여야 한다")
+        if any(isinstance(item.get(key), bool) for key in ("from", "to", "rate")):
+            raise ValueError("방어율 구간에는 숫자가 필요하다")
+        try:
+            start, end = _window(item, "방어율")
+        except OverflowError:
+            raise ValueError("방어율 구간은 유한한 숫자여야 한다") from None
+        try:
+            rate = float(item.get("rate", 60.0))
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("방어율은 0~100 사이의 유한한 숫자여야 한다") from None
+        if not math.isfinite(rate) or not 0 <= rate <= 100:
+            raise ValueError("방어율은 0~100 사이의 유한한 숫자여야 한다")
+        result.append([start, end, rate])
+    return result
 
 
 def normalize_element_windows(raw: Any) -> list[dict[str, Any]]:

@@ -464,6 +464,7 @@ n% ▲]`처럼 대괄호 안에 상태 이름을 적어 두더라도, 그 이름
 | `방어형 아군 전체에게` | `"allies_class:방어"` |
 | `지원형 아군 전체에게` | `"allies_class:지원"` |
 | `수냉/작열/전격 코드 아군 전체에게` | `"allies_code:수냉"` 등 |
+| `자신을 제외한 전격 코드 아군 전체에게` | `"allies_code_excl_self:전격"` — 코드 필터 후 시전자 제외 |
 | `전격 코드 소총 아군 전체에게` (코드+무기 복합) | `"allies_code_weapon:전격:AR"` — `코드:무기유형` 순. **`소총` = AR**(SR은 `스나이퍼 라이플`, MG는 `머신건`, SMG는 `기관단총`, SG는 `샷건`, RL은 `로켓 런처`로 각각 별도 표기) |
 | `스쿼드에서 가장 왼쪽에 위치한 전격 코드 소총 아군 N기에게` | `"allies_code_weapon_leftmost:전격:AR:N"` — 스쿼드 입력 순서 기준 조건 만족 첫 N명. 매칭 아군 0명이면 무발동 |
 | `풍압/수냉/작열/전격 코드 적 전체에게` | `"enemies_code:풍압"` 등 |
@@ -615,7 +616,7 @@ n% ▲]`처럼 대괄호 안에 상태 이름을 적어 두더라도, 그 이름
 | `charge_speed_debuff_immune` | 차지 속도 감소 효과 면역 (`values`/`fixed_value` 없음) |
 | `charge_speed_buff_immune` | 차지 속도 증가 효과 면역 (`values`/`fixed_value` 없음) |
 | `stack_change_immune` | 중첩량 증감 효과 면역 (`values`/`fixed_value` 없음) |
-| `buff_max_stack_add` | `중첩 가능 이로운 효과 중첩량 N개 ▲` — 대상 아군의 스택형 이로운 효과 **중첩 한도(`max_stack`)** 를 N 올린다. 대상 버프를 특정하지 않으므로 `target_effect` 없음 |
+| `buff_max_stack_add` | **최대 중첩 한도** 증가가 명시된 경우에만 사용. `중첩 가능 이로운 효과 중첩량 N개 ▲`는 이 키가 아니라 `buff_stack_add` 즉발이다 |
 | `charge_time_fixed` | 차지 시간 고정 |
 | `atk_copy` | 공격력 복제 (복잡 메카닉, 파싱 불가 시 `_unparseable`) |
 | `hp_copy` | 체력 복제 (복잡 메카닉, 파싱 불가 시 `_unparseable`) |
@@ -664,7 +665,7 @@ n% ▲]`처럼 대괄호 안에 상태 이름을 적어 두더라도, 그 이름
 | `ammo_charge_flat` | 탄환 충전 N발 |
 | `burst_charge_pct` | 버스트 게이지 충전 N% |
 | `heal_hp_pct` | 체력 회복 (시전자 최대 체력 N%) |
-| `buff_stack_add` | 중첩형 이로운 효과 중첩 N 증가. 특정 named buff의 스택을 올리는 경우에 사용 |
+| `buff_stack_add` | 현재 중첩 N 증가(instant). `중첩 가능 이로운 효과 중첩량 N개 ▲`는 `target_effect` 없이 대상의 활성 이로운 중첩 버프 전체에 적용. 특정 named buff이면 `target_effect`를 지정. 최대 한도는 유지하며 없는 버프를 생성하지 않음 |
 | `buff_stack_remove` | 중첩형 이로운 효과 중첩 N 감소. 특정 named buff의 스택을 내리는 경우에 사용 |
 | `debuff_stack_add` | 중첩형 해로운 효과 중첩 N 증가. 스택이 쌓이는 debuff에만 사용 |
 | `debuff_stack_remove` | 중첩형 해로운 효과 중첩 N 감소. 스택이 쌓이는 debuff의 중첩을 줄이는 경우에만 사용. 단순 해제(스택 무관)는 `debuff_cleanse` 사용 |

@@ -193,14 +193,35 @@ describe('applyShareToDecks', () => {
 
 
 describe('전투 조건 공유 코드 (NK3)', () => {
+  it('round trips size windows', () => {
+    const shotgunSizeWindows = [{ from: 3, to: 6, diameter: 120 }];
+    expect(decodeBattleCode(encodeBattleCode({ ...base, shotgunSizeWindows }, COEFF)).shotgunSizeWindows).toEqual(shotgunSizeWindows);
+  });
+  it('round trips versioned spatial settings without upgrading old codes', () => {
+    expect(decodeBattleCode(encodeBattleCode({ ...base, shotgunModel: 'spatial-v1', shotgunTargetDiameter: 123 }, COEFF)))
+      .toMatchObject({ shotgunModel: 'spatial-v1', shotgunTargetDiameter: 123 });
+    expect(decodeBattleCode(encodeBattleCode(base, COEFF)).shotgunModel).toBeUndefined();
+  });
+  it('round trips boss size, custom probability and old default', () => {
+    expect(decodeBattleCode(encodeBattleCode({ ...base, bossSize: 'custom', shotgunHitRate: .735 }, COEFF)))
+      .toMatchObject({ bossSize: 'custom', shotgunHitRate: .735 });
+    expect(decodeBattleCode(encodeBattleCode(base, COEFF)).shotgunHitRate).toBe(1);
+  });
+
   const COEFF = { AR: 1, SMG: 1, SG: 0.9, MG: 1, SR: 1, RL: 1 };
   const base = {
     duration: 180, synchroLevel: 400, enemyDef: 31_784, enemyCode: '' as const, coreEnabled: false,
     corePx: 52, hasParts: false, seed: 42, optimalRangeWeapons: [],
-    normalHitCoeff: { ...COEFF }, immuneWindows: [], elementWindows: [],
+    normalHitCoeff: { ...COEFF }, coreWindows: [], optimalRangeWindows: [], defenseRateWindows: [], immuneWindows: [], elementWindows: [],
     rngMode: 'expected' as const, immuneBlocksBurst: true, burstRegenTime: 2, burstReaction: 0.05,
     console: { common_level: 390, class_level: { 화력형: 257 }, company_level: { 필그림: 386 } },
   };
+
+  it('preserves common and deck-specific first burst times', () => {
+    const value = { ...base, firstBurstTime: 1.5, firstBurstPerDeck: { 1: 0, 3: 7.2 } };
+    expect(decodeBattleCode(encodeBattleCode(value, COEFF))).toMatchObject({ firstBurstTime: 1.5, firstBurstPerDeck: { 1: 0, 3: 7.2 } });
+    expect(decodeBattleCode(encodeBattleCode(base, COEFF)).firstBurstTime).toBe(0);
+  });
 
   it('기본값은 아예 싣지 않아 코드가 아주 짧다', () => {
     // 붙여넣는 곳이 400자쯤에서 잘린다는 제보 — 기본값 생략이 가장 큰 절약이다.
@@ -214,13 +235,26 @@ describe('전투 조건 공유 코드 (NK3)', () => {
       ...base, duration: 120, enemyCode: '철갑' as const, coreEnabled: true,
       optimalRangeWeapons: ['SG', 'SMG'], rngMode: 'random' as const,
       immuneBlocksBurst: false, burstRegenTime: 2.8,
+      coreWindows: [{ from: 30, to: 60 }, { from: 90, to: 120 }],
       immuneWindows: [{ from: 10, to: 30 }, { from: 90.5, to: 95 }],
       elementWindows: [{ from: 100, to: 102, code: '풍압' as const }],
     };
     const code = encodeBattleCode(battle, COEFF);
     expect(code.length).toBeLessThan(200);   // 붙여넣기 한도(약 400자)의 절반 아래
     const { console: _drop, synchroLevel: _level, ...expected } = battle;
-    expect(decodeBattleCode(code)).toEqual({ ...expected, normalHitCoeff: {} });
+    expect(decodeBattleCode(code)).toEqual({ ...expected, firstBurstTime: 0, normalHitCoeff: {}, bossSize: 'large', shotgunHitRate: 1, burstGaugeMode: 'new' });
+  });
+
+  it('유효 사거리 구간과 빈 무기군을 공유한다', () => {
+    const optimalRangeWindows = [{ from: 10, to: 30, weapons: ['AR', 'SR'] }, { from: 60, to: 90, weapons: [] }];
+    expect(decodeBattleCode(encodeBattleCode({ ...base, optimalRangeWindows }, COEFF)).optimalRangeWindows).toEqual(optimalRangeWindows);
+  });
+
+  it('바디 방어율 구간의 시간과 소수 방어율을 공유한다', () => {
+    const defenseRateWindows = [{ from: 10.5, to: 60, rate: 60 }, { from: 50, to: 100, rate: 75.5 }];
+    expect(decodeBattleCode(encodeBattleCode({ ...base, defenseRateWindows }, COEFF)).defenseRateWindows)
+      .toEqual(defenseRateWindows);
+    expect(decodeBattleCode(encodeBattleCode(base, COEFF)).defenseRateWindows).toEqual([]);
   });
 
   it('평타 계수는 기본값과 다른 무기군만 싣는다', () => {
@@ -265,6 +299,13 @@ describe('전투 조건 공유 코드 (NK3)', () => {
     expect(decodeBattleCode(encodeBattleCode(base, COEFF)).immuneBlocksBurst).toBe(true);
     const off = encodeBattleCode({ ...base, immuneBlocksBurst: false }, COEFF);
     expect(decodeBattleCode(off).immuneBlocksBurst).toBe(false);
+  });
+
+  it('버스트 게이지 방식 — 없으면 신 방식이고, 구 방식만 코드에 실린다', () => {
+    expect(decodeBattleCode(encodeBattleCode(base, COEFF)).burstGaugeMode).toBe('new');
+    // 신 방식은 키를 안 남긴다 — 이 항목이 생기기 전의 코드와 같은 바이트다.
+    expect(encodeBattleCode({ ...base, burstGaugeMode: 'new' }, COEFF)).toBe(encodeBattleCode(base, COEFF));
+    expect(decodeBattleCode(encodeBattleCode({ ...base, burstGaugeMode: 'legacy' }, COEFF)).burstGaugeMode).toBe('legacy');
   });
 
   it('범위를 벗어난 값과 못 쓰는 구간은 기본값으로 되돌린다', () => {

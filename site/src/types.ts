@@ -18,8 +18,24 @@ export interface SkillLevels {
   '3': number;
 }
 
+/**
+ * 버스트 게이지 판정. `new` = 히트마다 실제로 쌓아 100%에 1단계(신 방식, 기본).
+ * `legacy` = 고정 시간(첫 버스트 시간·버스트 게이지 충전, 구 방식). **없으면 신 방식이다** —
+ * 이 항목이 생기기 전에 저장·공유된 조건은 전부 신 방식으로 읽힌다.
+ */
+export type BurstGaugeMode = 'new' | 'legacy';
+
 export interface CharacterControl {
-  tap_fire?: { rate: number; release?: number; full_charge_interval?: number };
+  bunny_mode?: 'stance' | 'engage';
+  tap_fire?: {
+    rate: number;
+    release?: number;
+    full_charge_interval?: number;
+    /** `burst_charge` = 풀버스트 밖(버충 구간)에서만 톡톡이. 없으면 언제나. */
+    policy?: 'always' | 'burst_charge';
+    /** 버충 톡톡이에서 풀버스트가 끝나는 순간 재장전을 걸지. 기본 true. */
+    reload_at_end?: boolean;
+  };
   reload?: {
     policy: 'before_fb_end' | 'into_fb';
     lead?: number;
@@ -109,7 +125,22 @@ export interface ConsoleLevels {
   company_level: Record<string, number>;
 }
 
+export interface ShotgunGeometry {
+  shapes: Array<{ kind: 'circle' | 'rect' | 'triangle'; x: number; y: number; w: number; h: number; rotation: number; windows?: Array<[number, number]> }>;
+  parts: ShotgunGeometry['shapes'];
+  core?: { x: number; y: number; d: number } | null;
+  center?: { x: number; y: number } | null;
+  aimKeys?: Array<{ t: number; x: number; y: number }>;
+  spread?: Record<string, number>;
+  playerName?: string;
+}
+
 export interface SimulationRequest {
+  shotgunModel?: 'legacy' | 'spatial-v1' | 'spatial-convergence-v1';
+  shotgunTargetDiameter?: number;
+  shotgunSizeWindows?: Array<PhaseWindow & { diameter: number }>;
+  shotgunHitRate?: number;
+  shotgunGeometry?: ShotgunGeometry;
   squad: string[];
   characters?: Record<string, CharacterOverrides>;
   customCharacters?: Record<string, { nikke: Record<string, unknown>; skills: unknown[] }>;
@@ -122,6 +153,9 @@ export interface SimulationRequest {
   // 적정거리로 둘 무기군. 그 무기군의 **일반 공격**에만 ③ 보너스 +30%.
   optimalRangeWeapons?: string[];
   // 보스 페이즈 — 족자(평타 빗나감)와 속저(우월 코드만 통과).
+  coreWindows?: PhaseWindow[];
+  optimalRangeWindows?: OptimalRangeWindow[];
+  defenseRateWindows?: DefenseRateWindow[];
   immuneWindows?: PhaseWindow[];
   elementWindows?: ElementWindow[];
   rngMode?: RngMode;
@@ -146,10 +180,14 @@ export interface SimulationRequest {
   console?: ConsoleLevels;
   /** 싱크로 레벨. 안 주면 엔진 기본 스펙 레벨(400)을 쓴다. */
   synchroLevel?: number;
-  // 버스트 게이지 충전 시간(초). 게이지 누적 대신 쓰는 고정 시간이다.
+  /** 버스트 게이지 판정 — 안 주면 신 방식(`new`, 히트 실누적). */
+  burstGaugeMode?: BurstGaugeMode;
+  // 버스트 게이지 충전 시간(초). 구 방식(`legacy`)에서 게이지 누적 대신 쓰는 고정 시간이다.
   burstRegenTime?: number;
   /** 버스트 반응속도(초). 안 주면 엔진 기본값(0.05)을 쓴다. */
   burstReaction?: number;
+  /** 전투 시작 기준 첫 버스트 최소 시작 시각(초), 기본 0. */
+  firstBurstTime?: number;
   /**
    * 파츠 파괴 주기(초). 보스 메이커가 «파츠 체력 ÷ 예상 DPS»로 낸 값을 넘긴다 —
    * 엔진에는 적 체력이 없어 파괴는 **시각**으로만 들어간다. 0이나 미지정이면 무발동.
@@ -157,6 +195,8 @@ export interface SimulationRequest {
   partBreakInterval?: number;
   /** 사격 밀도 트랙을 함께 받을지. 보스 메이커의 타임라인이 쓴다. */
   shotTrack?: boolean;
+  /** 샷건 히트맵 창을 열 때만 수집하는 사격별 진단. */
+  shotgunReport?: boolean;
   /** 장탄·재장전 트랙을 함께 받을지. 계산기 타임라인의 「장탄 표시」가 쓴다. */
   stateTrack?: boolean;
   /**
@@ -204,12 +244,19 @@ export interface ShotTrack {
 
 /** 보스 페이즈 구간. `[from, to)` 반개구간이다. */
 export interface PhaseWindow { from: number; to: number }
+export interface OptimalRangeWindow extends PhaseWindow { weapons: string[] }
+export interface DefenseRateWindow extends PhaseWindow { rate: number }
 /** 속저 — 그 구간 동안 이 코드에 **우월한** 캐릭터의 딜만 들어간다. */
 export interface ElementWindow extends PhaseWindow { code: ElementCode }
 /** 난수 처리. random = 인게임과 같은 분산, expected = 기대값(결정론적). */
 export type RngMode = 'random' | 'expected';
 
 export interface BattleSettings {
+  bossSize?: 'large' | 'medium' | 'small' | 'custom';
+  shotgunModel?: 'legacy' | 'spatial-v1' | 'spatial-convergence-v1';
+  shotgunTargetDiameter?: number;
+  shotgunSizeWindows?: Array<PhaseWindow & { diameter: number }>;
+  shotgunHitRate?: number;
   duration: number;
   /**
    * 싱크로 디바이스 레벨. 소대에 넣은 니케는 전원이 이 레벨이 되므로 캐릭터 설정이
@@ -225,12 +272,18 @@ export interface BattleSettings {
   optimalRangeWeapons: string[];
   normalHitCoeff: Record<string, number>;
   /** 족자 — 그 구간 동안 평타가 적중하지 않는다. */
+  /** Empty or absent means continuously exposed while core is enabled. */
+  coreWindows?: PhaseWindow[];
+  optimalRangeWindows?: OptimalRangeWindow[];
+  defenseRateWindows?: DefenseRateWindow[];
   immuneWindows: PhaseWindow[];
   /** 속저 — 그 구간 동안 우월 코드만 통과한다. */
   elementWindows: ElementWindow[];
   rngMode: RngMode;
   immuneBlocksBurst: boolean;
   console: ConsoleLevels;
+  /** 버스트 게이지 판정. 없으면 신 방식(`new`). 아래 충전 시간·첫 버스트 시간은 구 방식에서만 쓴다. */
+  burstGaugeMode?: BurstGaugeMode;
   burstRegenTime: number;
   /**
    * 덱마다 다른 버스트 게이지 충전 시간(초). 덱 번호 → 초.
@@ -252,6 +305,8 @@ export interface BattleSettings {
    * **버스트 하나하나마다** 더해진다 — 3단계까지 쓰면 그 세 배만큼 늦어진다.
    */
   burstReaction: number;
+  firstBurstTime?: number;
+  firstBurstPerDeck?: Record<number, number>;
   /**
    * 켜 둔 핵. 인게임에 없는 값을 억지로 켜는 스위치라 **공유 코드에는 담기지 않는다** —
    * 남이 준 전투 조건을 적용했더니 몰래 핵이 켜져 있는 일은 없어야 한다.
@@ -314,8 +369,17 @@ export interface BattleTimeline {
   damage: Record<string, number[]>;
   bursts: Record<string, BurstCast[]>;
   fullBurst: [number, number][];
+  fullBurstSummary?: {
+    count: number;
+    lastStart: number | null;
+    lastDuration: number | null;
+    lastPlannedDuration: number | null;
+    lastTruncated: boolean;
+  };
   /** 버프가 걸려 있던 구간. 구버전 캐시에는 없다. */
   buffs?: BuffTrack[];
+  /** 버스트 게이지(%) — 칸 끝 시점의 값. 두 방식 모두 실린다. 옛 결과에는 없다. */
+  gauge?: number[];
 }
 
 /**
@@ -367,11 +431,13 @@ export interface CharacterDamageBreakdown {
 }
 
 export interface SimulationResult {
+  shotgunReport?: Record<string, ShotgunHeatmapData>;
   squadTotal: number;
   duration: number;
   hitCount: number;
   charTotals: Record<string, number>;
   // 구버전 캐시에 저장된 결과에는 없을 수 있다.
+  shotgunStats?: Record<string, { fired: number; hit: number; core: number; miss: number; minDiameter: number; maxDiameter: number }>;
   charBreakdown?: Record<string, CharacterDamageBreakdown>;
   previewNote: string;
   deviations: string;
@@ -384,6 +450,22 @@ export interface SimulationResult {
   buffTargets?: Record<string, BuffTargetRow[]>;
   /** 0.1초 칸으로 나눈 같은 결과. `fineTimeline`을 켠 요청에만 실려 온다. */
   fineTimeline?: BattleTimeline;
+}
+
+export interface ShotgunHeatmapScene {
+  shapes: Array<[string, number, number, number, number, number]>;
+  aim: [number, number]; radius: number; core: [number, number, number] | null;
+  spatial: boolean; exponent: number;
+}
+export interface ShotgunHeatmapFrame {
+  t: number; scene: number; pellets: number; hit: number; core: number;
+  accuracy: number; fullBurst: boolean;
+}
+export interface ShotgunHeatmapData {
+  size: number; bounds: [number, number, number, number];
+  density: number[]; body: number[]; core: number[]; miss: number[];
+  scenes: ShotgunHeatmapScene[]; frames: ShotgunHeatmapFrame[];
+  sceneCount: number; spatial: boolean; fired: number; hit: number; coreHits: number;
 }
 
 /** 「누가 이 버프를 받았나」 한 줄. 대상이 공격력 순위로 갈려 편성만으로는 알 수 없다. */
@@ -519,10 +601,33 @@ export interface CombatPowerRequest {
   console?: ConsoleLevels;
 }
 
+export interface GrowthComparisonRequest {
+  name: string;
+  baseline: CharacterOverrides;
+  scenarios: Array<{ label: string; changes: CharacterOverrides }>;
+  synchroLevel?: number;
+  console?: ConsoleLevels;
+}
+
+export interface RecommendationOptions {
+  candidates: Array<{ label: string; squad: string[]; sourceUrl?: string; reason?: string }>;
+  squadCount?: number;
+  include?: string[];
+  exclude?: string[];
+  scenarios?: Array<{ label: string; battle: Partial<Pick<BattleSettings,
+    'enemyDef' | 'corePx' | 'coreWindows' | 'optimalRangeWindows' | 'hasParts' | 'defenseRateWindows' |
+    'elementWindows' | 'immuneWindows' | 'firstBurstTime' | 'burstRegenTime' | 'optimalRangeWeapons'>> }>;
+}
+
+export interface RecommendationRequest extends RecommendationOptions {
+  roster: Record<string, CharacterOverrides>;
+  battle: Omit<SimulationRequest, 'squad' | 'characters'>;
+}
+
 export interface WorkerRequest {
   id: number;
-  type: 'prepare' | 'simulate' | 'combatPower';
-  payload?: SimulationRequest | CombatPowerRequest;
+  type: 'prepare' | 'simulate' | 'simulateMcp' | 'combatPower' | 'compareGrowth' | 'recommend';
+  payload?: SimulationRequest | CombatPowerRequest | GrowthComparisonRequest | RecommendationRequest;
 }
 
 export interface WorkerResponse {

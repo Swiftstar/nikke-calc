@@ -1,4 +1,7 @@
+import {elementText} from './element-inline';
 import type { ShareItem, ShareKind, ShareServer, VoteValue } from './share-server';
+import { summarizeBattle } from './share-server';
+import { decodeBattleCode } from './share-code';
 
 // 공유 모달의 서버 쪽 판. 전투 조건과 조합이 같은 구조를 쓰므로 여기 한 번만 쓴다.
 // 세 갈래다 — «올리기»는 지금 설정을 이름 붙여 보내고, «내려받기»는 남이 올린 것을
@@ -37,6 +40,11 @@ export interface SharePanelDeps {
    * 같은 입력칸이 두 군데 있으면 어느 쪽이 진짜인지 헷갈린다.
    */
   tabs?: TabKey[];
+  /**
+   * 글마다 덧붙일 것(어드민의 「계산기 레이드로 올리기」 같은). 줄 아래에 놓는다 —
+   * «적용» 옆 칸을 늘리면 좁은 화면에서 단추끼리 겹친다. null이면 아무것도 안 낸다.
+   */
+  extra?: (item: ShareItem) => HTMLElement | null;
 }
 
 export interface SharePanel {
@@ -185,7 +193,11 @@ export function mountSharePanel(hosts: SharePanelHosts, deps: SharePanelDeps): S
     renderList();
     try {
       const got = await deps.server.list(deps.kind);
-      items = got.items;
+      items = got.items.map(item=>{
+        if(deps.kind!=='boss')return item;
+        try{return {...item,auto:summarizeBattle(decodeBattleCode(item.code))};}
+        catch{return item;}
+      });
       mine = got.mine;
       applied = got.applied;
       loaded = true;
@@ -282,7 +294,31 @@ export function mountSharePanel(hosts: SharePanelHosts, deps: SharePanelDeps): S
         preview.title = item.auto;
         body.append(preview);
       } else if (item.auto) {
-        body.append(el('p', 'share-auto', item.auto));
+        const summary = el('p', 'share-auto');
+        const text = el('span', 'share-auto-text');
+        text.append(elementText(item.auto));
+        summary.append(text); summary.title = item.auto; summary.tabIndex = 0;
+        let animation: Animation | undefined;
+        let copy: HTMLElement | undefined;
+        const stop = () => { animation?.cancel(); animation = undefined; copy?.remove(); copy = undefined; };
+        const start = () => {
+          stop();
+          if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+          const distance = text.scrollWidth - summary.clientWidth;
+          if (distance <= 0 || !text.animate) return;
+          const width = text.scrollWidth + 32;
+          copy = el('span', 'share-auto-copy');
+          copy.append(elementText(item.auto));
+          copy.setAttribute('aria-hidden','true'); text.append(copy);
+          animation = text.animate([
+            {transform:'translateX(0)',offset:0},
+            {transform:`translateX(-${width}px)`,offset:1},
+          ], {duration:Math.max(4000,width/45*1000),iterations:Infinity,easing:'linear'});
+        };
+        summary.addEventListener('mouseenter',start); summary.addEventListener('focus',start);
+        summary.addEventListener('mouseleave',()=>{ if(document.activeElement!==summary) stop(); });
+        summary.addEventListener('blur',stop);
+        body.append(summary);
       }
       const by = el('p', 'share-by');
       if (item.by) by.append(el('span', undefined, item.by));
@@ -309,6 +345,8 @@ export function mountSharePanel(hosts: SharePanelHosts, deps: SharePanelDeps): S
         void countApply(item);
       });
 
+      const extra = deps.extra?.(item);
+      if (extra) body.append(extra);
       row.append(body, votes, apply);
       box.append(row);
     }

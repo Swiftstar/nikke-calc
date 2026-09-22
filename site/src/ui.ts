@@ -1,3 +1,5 @@
+import {elementText,refreshElementSelect} from './element-inline';
+import { parseViewHash, viewHash, type ViewName, type FunView } from './view-route';
 import { openCharacterInfo, customSkillInfo } from './character-info';
 import {
   ANNOUNCEMENT_KEY, announcementToShow, countdownClock, countdownDone, countdownToShow,
@@ -5,7 +7,7 @@ import {
 import { ResultCache, type StorageLike, type StorageSource } from './cache';
 import { applyBackup, backupFileName, buildBackup, readBackup } from './backup';
 import { isCancelled } from './worker-client';
-import { renderCharacterSettings, withParticle, type CharPanelKind } from './character-settings';
+import { renderCharacterSettings, withParticle, NO_CUBE, type CharPanelKind } from './character-settings';
 import {
   BLABLA_SERVERS,
   areaToOverrides,
@@ -17,6 +19,8 @@ import {
   type RawProfile,
 } from './blablalink';
 import { parseRosterCsv } from './csv-import';
+import { createSkillPlanner } from './skill-planner-ui';
+import { PLANNER_KEY } from './skill-planner';
 import {
   VISION_METRICS, packBounds, packCircles, visionRows, visionSize, visionSummary,
   type VisionMetric,
@@ -24,6 +28,8 @@ import {
 import {
   formatEok,
   loadEnikkComps,
+  fetchSeasons,
+  type EnikkSeason,
   WEAKNESS_KO,
   type EnikkImport,
   type EnikkPlayer,
@@ -47,7 +53,12 @@ import {
   reportFilename,
   type ReportMeta,
 } from './report';
-import { csvBlob, csvFileName, csvText, damageCsv } from './export-csv';
+import { csvBlob, csvFileName, csvText, damageBatchRows, type DamageCsvDeck } from './export-csv';
+import { openShotgunHeatmap } from './shotgun-heatmap';
+import { renderMcpGuide } from './mcp-guide';
+import { renderPickupHistory } from './pickup-history';
+import { BrowserMcpConnection } from './mcp-browser';
+import { buildMcpShare } from './mcp-share';
 import {
   applyShareToDecks, decodeBattleCode, decodeShareCode, encodeBattleCode, encodeShareCode,
   type ApplyTarget,
@@ -65,6 +76,8 @@ import { startPresence } from './presence';
 import { mountUnionRaid, type UnionHandle } from './union-raid';
 import { mountBossMaker, type BossMakerHandle } from './boss-maker-view';
 import { mountOverloadLab } from './overload-lab';
+import { lockCardForRaid, mountRaid, openidFromProfileUrl, RAID_LOCK_NOTE, type RaidHandle } from './raid';
+import { openGrowthEfficiency } from './growth-efficiency-ui';
 import { EXTERNAL_LINKS, hostOf } from './external-links';
 import {
   BURST_STAGES,
@@ -279,7 +292,7 @@ function renderCharacterRows(
     body.append(head, track);
     row.append(body);
 
-    row.append(createText('strong', Math.round(value).toLocaleString('ko-KR'), 'result-row-total'));
+    row.append(createText('strong', fmt.dmg(value), 'result-row-total'));
     rows.append(row);
   }
   container.append(rows);
@@ -336,6 +349,14 @@ function renderCharacterCards(
     bar.style.width = `${best > 0 ? Math.max(2, value / best * 100) : 2}%`;
     track.append(bar);
     card.append(track);
+    const pelletStats = entry.result.shotgunStats?.[name];
+    if (pelletStats && pelletStats.fired > 0) {
+      const pct = (n: number) => (n / pelletStats.fired * 100).toFixed(1);
+      const info = createText('small', `예상 펠릿 명중 ${pct(pelletStats.hit)}% · 코어 ${pct(pelletStats.core)}% · 빗나감 ${pct(pelletStats.miss)}%`);
+      info.title = `발사 ${pelletStats.fired.toLocaleString()}개 / 예상 명중 ${pelletStats.hit.toFixed(1)}개 / 탄착 직경 ${pelletStats.minDiameter.toFixed(1)}~${pelletStats.maxDiameter.toFixed(1)}. 코어 비율은 발사 펠릿 전체 기준입니다. 난수 모드에서도 이 표시는 사격 시점별 기대값입니다.`;
+      card.append(info);
+    }
+
 
     // 평타/스킬 분해와 스킬별 내역. 카드가 좁으니 접어 둔다.
     const breakdown = entry.result.charBreakdown?.[name];
@@ -353,7 +374,7 @@ function renderCharacterCards(
       // 쏜 것이 없으면(스킬로만 때리는 판) 적을 것도 없다.
       const shots = breakdown.shots ?? 0;
       if (shots > 0) {
-        const corePct = (breakdown.coreShots ?? 0) / shots * 100;
+        const corePct = pelletStats && pelletStats.fired > 0 ? pelletStats.core / pelletStats.fired * 100 : (breakdown.coreShots ?? 0) / shots * 100;
         const core = createText('span', t('코어 {pct}%', { pct: corePct.toFixed(0) }), 'legend-core');
         core.title = t('쏜 탄 가운데 코어에 맞은 비율입니다. 무기군의 탄착군 크기와 코어 크기로 정해지며, 변신 모드에서는 그 모드의 무기로 따집니다. 스킬 대미지는 조준 판정이 없어 여기 들어가지 않습니다.');
         summary.append(core);
@@ -425,9 +446,25 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   const blablaProxy = (deps.blablaProxy ?? BLABLA_PROXY).trim().replace(/\/+$/, '');
   /** 유니온 탭 손잡이. 프록시가 없어 탭을 안 만든 배포에서는 끝까지 비어 있다. */
   let unionHandle: UnionHandle | null = null;
+  let raidHandle: RaidHandle | null = null;
+  /** 계산기 레이드 탭이 켜져 있나. 켜지면 편성 카드의 육성 조작이 잠긴다(큐브만 산다). */
+  let raidMode = false;
+  /** 레이드 모의전 — 켜면 잠금을 풀고 평소처럼 만진다. 결과는 올라가지 않는다. */
+  let raidMock = false;
+  /** 카드가 잠겨야 하나 — 레이드 탭이고 모의전이 아닐 때. */
+  const raidLocked = (): boolean => raidMode && !raidMock;
   const cache = new ResultCache(storage, version, 30);
   const catalogByName = new Map(catalog.map((char) => [char.name, char]));
   const decks = Array.from({ length: 2 }, (_, index) => emptyDeck(index + 1));
+  /**
+   * 덱 세트 — 속성별 프리셋. «수냉 보스용 다섯 덱»과 «작열 보스용 다섯 덱»을 오가며
+   * 쓰는데, 결과 불러오기는 니케 설정까지 다시 만져야 해서 번거로웠다(피드백 2026-09-21).
+   * `decks`는 언제나 **지금 세트**의 덱이고, 나머지 세트는 여기 잠들어 있다.
+   */
+  const DECK_SETS = ['기본', '수냉', '작열', '철갑', '전격', '풍압'] as const;
+  type DeckSetKey = typeof DECK_SETS[number];
+  let activeDeckSet: DeckSetKey = '기본';
+  const sleepingDeckSets = new Map<DeckSetKey, DeckState[]>();
   decks[0]!.squad = initialSquad(catalog);
   let activeDeckId = 1;
   let activeSlot = 0;
@@ -453,6 +490,12 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     const source = typeof storage === 'function' ? storage() : storage;
     return source ?? null;
   };
+  const IMPORTED_CONSOLE_KEY='nikke-imported-console-v1';
+  let importedConsole:ReturnType<typeof consoleFrom>=null;
+  try{const raw=resolveStorage()?.getItem(IMPORTED_CONSOLE_KEY);const value=raw?JSON.parse(raw):null;
+    const valid=(n:unknown)=>typeof n==='number'&&Number.isInteger(n)&&n>=0&&n<=1000;
+    if(value&&valid(value.common_level)&&settings.consoleClasses.every(key=>valid(value.class_level?.[key]))&&settings.consoleCompanies.every(key=>valid(value.company_level?.[key])))importedConsole=value;
+  }catch{}
   const ACCOUNT_SYNCHRO_KEY = 'nikke-account-synchro-v1';
   let accountSynchro: number | null = null;
   let useAccountSynchro = true;
@@ -631,6 +674,9 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     carryOverSettings: boolean;
     battle: BattleSettings;
     buffTargets: Array<{ id: number; sig: string; rows: Record<string, BuffTargetRow[]> }>;
+    /** 지금 보고 있는 덱 세트와, 잠들어 있는 나머지 세트의 덱. 옛 저장본에는 없다. */
+    deckSet?: string;
+    deckSets?: Record<string, DeckState[]>;
   }
   // 큐브 이름이 짧은 통칭에서 인게임 정식 명칭으로 바뀌었다. 이전 버전에서 저장된
   // 편성에는 옛 이름이 남아 있어 그대로 두면 엔진이 요청을 거부한다. 불러올 때 한 번
@@ -644,13 +690,22 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     분배: '렐릭 디바이드 큐브',
   };
   const migrateSavedCubes = (state: Partial<SavedState>): Partial<SavedState> => {
+    if (state.battle && state.battle.shotgunModel === undefined) state.battle.shotgunModel = 'legacy';
+    // Retire only the legacy SG default; preserve deliberate custom coefficients.
+    if (state.battle && state.battle.shotgunHitRate === undefined) {
+      if (state.battle.normalHitCoeff?.SG === 0.9) state.battle.normalHitCoeff.SG = 1;
+      state.battle.shotgunHitRate = 1;
+      state.battle.bossSize = 'large';
+    }
+
     for (const deck of state.decks ?? []) {
       for (const overrides of Object.values(deck.characters ?? {})) {
         const cube = overrides.cube;
         if (!cube) continue;
         const renamed = LEGACY_CUBE_NAMES[cube.name];
         if (renamed) cube.name = renamed;
-        if (!settings.cubes[cube.name]) delete overrides.cube;
+        if (cube.name === NO_CUBE) cube.level = 0;
+        else if (!settings.cubes[cube.name]) delete overrides.cube;
       }
       for (const overrides of Object.values(deck.characters ?? {})) migrateOverloadLines(overrides);
     }
@@ -677,6 +732,12 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         <a class="site-campaign-link" data-campaign-link target="_blank" rel="noreferrer noopener"></a>
         <button type="button" class="site-campaign-close" data-campaign-close aria-label="닫기">✕</button>
       </div>
+      <!-- 계산기 레이드 띠. 열린 레이드가 있을 때만 보인다 — 제목은 스크립트가 넣는다. -->
+      <div class="raid-band" data-raid-band hidden>
+        <span class="raid-live"><i aria-hidden="true"></i>계산기 레이드 진행중</span>
+        <span class="raid-band-list" data-raid-band-list></span>
+        <button type="button" class="raid-band-go" data-raid-band-go>참가하기 →</button>
+      </div>
       <!-- 초읽기. 안내 띠를 닫아도 남는다 — 닫는 것은 «읽었다»는 뜻이지
            «시계도 필요 없다»는 뜻이 아니다. 말은 스크립트가 넣는다. -->
       <p class="site-countdown" data-countdown hidden>[<span data-countdown-label></span> <b data-countdown-clock>00:00:00</b>]</p>
@@ -694,25 +755,22 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       <nav class="view-tabs" aria-label="화면 전환">
         <button type="button" class="view-tab is-on" data-view-tab="calc" aria-pressed="true">계산기</button>
         ${blablaProxy ? '<button type="button" class="view-tab" data-view-tab="union" aria-pressed="false">유니온 레이드<b class="tab-beta">BETA</b></button>' : ''}
-        <button type="button" class="view-tab" data-view-tab="lab" aria-pressed="false">오버효율<b class="tab-beta">BETA</b></button>
         <button type="button" class="view-tab" data-view-tab="enikk" aria-pressed="false">ENIKK 조합 가져오기</button>
-        <button type="button" class="view-tab" data-view-tab="fun" aria-pressed="false">재미용 기능</button>
+        <button type="button" class="view-tab" data-view-tab="fun" aria-pressed="false">편의 기능</button>
         <button type="button" class="view-tab" data-view-tab="links" aria-pressed="false">외부고리</button>
       </nav>
 
-      <!-- 재미용. 계산에는 관여하지 않는 것들만 둔다 — 안쪽 단추로 다시 갈린다. -->
+      <!-- 육성 계획과 프로필 확인을 위한 편의 도구. -->
       <section class="panel fun-panel" data-view="fun" aria-labelledby="fun-heading" hidden>
         <div class="section-heading">
-          <div><p class="step">FOR FUN</p><h2 id="fun-heading">재미용 기능</h2></div>
+          <div><p class="step">UTILITIES</p><h2 id="fun-heading">편의 기능</h2></div>
         </div>
-        <p class="fun-lede">계산과 상관없이 <b>구경하는 것들</b>입니다. 여기 값은 딜 계산에 쓰이지 않습니다.</p>
-        <div class="fun-tabs" data-fun-tabs role="tablist" aria-label="재미용 기능 고르기"></div>
+        <p class="fun-lede">픽업 이력을 살펴보고, 육성 재료·효율 계산과 AI 연결을 이용하세요.</p>
+        <div class="fun-tabs" data-fun-tabs role="tablist" aria-label="편의 기능 고르기"></div>
         <div class="fun-body" data-fun-body></div>
+        <!-- 별도 컨테이너를 유지하여 탭 전환 중에도 비교 설정과 결과를 보존한다. -->
+        <section class="lab-panel" data-overload-lab hidden></section>
       </section>
-
-      <!-- 오버효율. 안은 overload-lab.ts가 통째로 그린다 — 계산기 화면과 겹치는
-           것이 없어(편성도 조건도 그쪽 것을 빌려 쓴다) 판만 내어 준다. -->
-      <section class="panel lab-panel" data-view="lab" data-overload-lab hidden></section>
 
       <section class="panel links-panel" data-view="links" aria-labelledby="links-heading" hidden>
         <div class="section-heading">
@@ -842,11 +900,11 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         <div class="section-heading">
           <div><p class="step">ENIKK</p><h2 id="enikk-heading">ENIKK 조합 가져오기</h2></div>
         </div>
-        <p class="enikk-lede">enikk.app 솔로레이드 랭킹에서 <b>그 사람이 실제로 쓴 5덱을 통째로</b> 가져옵니다. 최신 시즌 상위 <b>300명</b>(KR·JP·GLOBAL·NA·TW-HK·SEA 각 50명)이 대상이고, 누르면 우리 5덱에 그대로 깔립니다.</p>
-        <p class="enikk-warn" data-enikk-warn>불러오는 데 <b>5~10초쯤</b> 걸립니다 — enikk에서 300명분을 한 번에 받아오기 때문입니다. 받아온 뒤에는 이 브라우저에 저장해 두고 다시 받지 않습니다.</p>
+        <p class="enikk-lede">enikk.app 솔로레이드 랭킹에서 <b>그 사람이 실제로 쓴 5덱을 통째로</b> 가져옵니다. 선택한 시즌 상위 <b>300명</b>(KR·JP·GLOBAL·NA·TW-HK·SEA 각 50명)이 대상이고, 누르면 우리 5덱에 그대로 깔립니다.</p>
+        <p class="enikk-warn" data-enikk-warn>불러오는 데 <b>5~10초쯤</b> 걸립니다 — enikk에서 300명분을 한 번에 받아오기 때문입니다. 마지막으로 받아온 결과는 이 브라우저에 저장합니다. 다른 시즌을 선택한 뒤 조합 가져오기를 누르면 해당 시즌을 새로 받습니다.</p>
         <div class="enikk-actions">
           <button type="button" class="roster-import" data-enikk-load>조합 가져오기</button>
-          <button type="button" class="roster-import" data-enikk-refresh hidden>다시 받기</button>
+          <button type="button" class="roster-import" data-enikk-refresh>시즌 새로고침</button>
           <span class="enikk-status" data-enikk-status></span>
         </div>
         <div class="enikk-exclude">
@@ -859,6 +917,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
           <div class="enikk-exclude-chips" data-enikk-exclude-chips></div>
           <p class="field-note">넣은 니케가 낀 덱은 <b>가져오기에서 빠집니다</b>. 그 니케가 없어도 짤 수 있는 조합만 남기려는 것입니다.</p>
         </div>
+        <label class="enikk-season-field">시즌 <select data-enikk-season aria-label="ENIKK 시즌 선택"><option value="">시즌 목록을 불러와 주세요</option></select></label>
         <div class="enikk-summary" data-enikk-summary hidden></div>
         <div class="enikk-compare" data-enikk-compare hidden></div>
         <div class="enikk-list" data-enikk-list hidden></div>
@@ -890,6 +949,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
             </div>
             <p class="roster-note" data-roster-note hidden></p>
           </div>
+          <!-- 덱 세트 — 속성별 프리셋. 누르면 편성 전체(덱 다섯)가 그 세트로 바뀐다. -->
+          <div class="deck-sets" data-deck-sets role="tablist" aria-label="덱 세트"></div>
           <div class="deck-tabs" data-deck-tabs hidden></div>
           <div class="deck-controls">
             <button type="button" class="burst-order-open" data-burst-order-open title="사이클마다 1버·2버·3버를 누가 쓸지 직접 정합니다. 정한 만큼만 따르고 그 뒤는 평소 순서로 돌아갑니다"><span class="burst-order-mark" aria-hidden="true">1·2·3</span><span>버스트 순서</span><b class="burst-order-badge" data-burst-order-badge hidden></b></button>
@@ -913,6 +974,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
           </div>
           </div>
           <p class="deck-note" data-deck-note hidden>덱 사이에는 같은 캐릭터를 다시 편성할 수 있습니다.</p>
+          <p class="raid-lock-note" data-raid-lock hidden>${RAID_LOCK_NOTE}</p>
           <div class="squad-grid" data-squad-grid></div>
 
           <!-- 니케 고르기. 창을 띄우지 않고 늘 펼쳐 두고, 검색은 이 판을 거른다.
@@ -943,6 +1005,9 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
                 <input type="checkbox" data-portrait-badges /><span>육성 표시</span>
               </label>
               <span class="filter-summary" data-filter-summary></span>
+              <!-- 코드도 판 밖 — 버스트 다음으로 자주 거르는 축이라 같은 줄 오른쪽 끝에
+                   아이콘으로 세운다. 글자 없이 아이콘만이라 줄을 거의 안 차지한다. -->
+              <div class="filter-chips code-chips" data-code-group role="group" aria-label="코드 필터"></div>
             </div>
             <!-- 판은 목록을 밀어내지 않고 그 «위에» 얹힌다. 밀어내면 펼칠 때마다
                  목록이 화면 밖으로 내려가 무엇을 고르는 중이었는지 놓친다. -->
@@ -971,6 +1036,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
                    제목 h2를 탭으로 갈아 끼웠으므로 id를 여기로 옮긴다. -->
               <button type="button" class="settings-tab is-on" id="settings-heading" data-settings-tab="battle" role="tab" aria-selected="true">전투 조건</button>
               <button type="button" class="settings-tab" data-settings-tab="maker" role="tab" aria-selected="false" title="보스의 모양·코어·파츠를 직접 그려 두고, 그 위에서 덱의 사격을 읽습니다. 구성은 PC에서만 됩니다">보스 메이커<b class="tab-beta">BETA</b></button>
+              <button type="button" class="settings-tab" data-settings-tab="raid" role="tab" aria-selected="false" title="어드민이 올린 전투 조건 하나로 모두가 다섯 덱을 돌려 합산 딜을 겨룹니다. 육성은 블라블라링크 값 그대로, 큐브와 버스트 순서만 내 것입니다">계산기 레이드<b class="tab-beta">BETA</b><b class="raid-dot" data-raid-dot hidden aria-hidden="true"></b></button>
             </div>
             <div class="target-actions">
               <!-- 핵은 창 안 탭에 살지만, 들어가는 문은 밖에 내놓는다 — 찾으려고
@@ -987,6 +1053,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
                없애고, «이 조건으로 → 실행»이 한 줄로 읽히게 하려는 것이다. -->
           <!-- 적 코드와 코어는 보스가 바뀔 때마다 손대는 둘이라 창 밖에 꺼내 둔다.
                나머지 조건은 한 번 정해 두면 그대로 쓰는 값이라 창 안에 남는다. -->
+          <!-- 레이드 탭이 켜지면 이 뭉치(조건·실행·상태)가 통째로 숨고 레이드 판이 선다. -->
+          <div data-battle-home>
           <div class="quick-cond" data-quick-cond>
             <label class="quick-code">
               <span>보스 코드</span>
@@ -1037,6 +1105,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
           <p class="battle-first-note" data-battle-first-note>계산하기 전에 <b>전투 조건을 한 번 확인해 주세요</b> — 몇 초짜리 전투인지, 적 코드가 무엇인지에 따라 결과가 완전히 달라집니다.</p>
           <!-- 막힌 이유는 누른 단추 바로 아래에서 읽혀야 한다. -->
           <div class="error-box" data-errors hidden role="alert"></div>
+          </div>
+          <div class="raid-pane" data-raid-pane hidden></div>
 
           <!-- 창은 조건 패널 «안»에 둔다 — 설정 입력을 지켜보는 리스너가 이 패널을
                기준으로 걸려 있어, 밖으로 빼면 값을 바꿔도 저장되지 않는다. -->
@@ -1055,9 +1125,14 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
             <label><span>적 코드</span><select id="enemy-code"><option value="">없음</option><option value="풍압">풍압(작열weak)</option><option value="수냉">수냉(전격weak)</option><option value="작열">작열(수냉weak)</option><option value="전격">전격(철갑weak)</option><option value="철갑">철갑(풍압weak)</option></select></label>
             <label><span>싱크로 레벨</span><div class="input-unit"><input id="synchro-level" type="number" min="1" max="${SYNCHRO_MAX}" step="1" value="${DEFAULT_SYNCHRO_LEVEL}" title="${t('싱크로 디바이스 소대에 넣은 니케는 전원이 이 레벨이 됩니다. 계정 육성 상태라 전투 조건 공유 코드에는 담기지 않습니다. {n}레벨까지는 실측값이고, 그 위는 같은 성장 곡선을 이어 붙여 계산합니다', { n: SYNCHRO_MEASURED_MAX })}" /><em>Lv</em></div></label>
             <label class="toggle-field"><input id="has-core" type="checkbox" /><span class="toggle"></span><span>코어 있음</span></label>
+            <label><span>샷건 계산 방식</span><select id="shotgun-model"><option value="spatial-v1" selected>탄착군·보스 크기 (개선)</option><option value="spatial-convergence-v1">탄착군 + 무기 수렴 (실험)</option><option value="legacy">기존 방식 · 고정 명중률</option></select></label>
+            <label><span>보스 판정 직경</span><div class="input-unit"><input id="shotgun-target-diameter" type="number" min="1" max="2000" step="1" value="360" disabled /><em>모형 px</em></div></label>
+            <label><span>보스 크기 · 샷건 명중</span><select id="boss-size"><option value="large">큼 · 펠릿 100%</option><option value="medium">보통 · 펠릿 90%</option><option value="small">작음 · 펠릿 80%</option><option value="custom">커스텀</option></select></label>
+            <label><span>샷건 펠릿 명중 확률</span><div class="input-unit"><input id="shotgun-hit-rate" type="number" min="0" max="100" step="0.1" value="100" disabled /><em>%</em></div></label>
             <label data-core-size><span>코어 직경</span><div class="input-unit"><input id="core-px" type="number" min="0" max="1000" step="1" value="52" disabled /><em>px</em></div></label>
             <label class="toggle-field"><input id="has-parts" type="checkbox" /><span class="toggle"></span><span>파괴 가능 파츠</span></label>
           </div>
+          <p class="field-note" id="shotgun-model-note">개선 모드는 명중 버프와 보스 판정 크기로 몸통·코어·빗나감을 함께 계산합니다. 크기와 펠릿 분포는 모형 가정이며 인게임 실측 확정값이 아닙니다. 보스메이커에서는 직경 대신 그린 도형을 사용합니다. 언제든 기존 방식으로 되돌릴 수 있습니다.</p>
           <fieldset class="range-field">
             <legend>적정거리</legend>
             <div class="range-options" data-optimal-range></div>
@@ -1072,7 +1147,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
             <div class="field-grid">
               <label><span>적 방어력</span><input id="enemy-def" type="number" min="0" max="999999" step="1" value="31784" /></label>
               <label><span>난수 시드</span><input id="seed" type="number" min="0" max="2147483647" step="1" value="42" /></label>
-              <label title="게이지 충전만의 시간입니다. 여기에 단계 전환 0.3초와 버스트 쿨 여유가 더해져 실제 공백은 더 깁니다."><span>버스트 게이지 충전</span><div class="input-unit"><input id="burst-regen" type="number" min="0" max="20" step="0.1" value="2" /><em>초</em></div></label>
+              <label title="신 방식은 히트마다 버스트 게이지를 실제로 쌓아 100%가 되면 1단계에 들어갑니다(원본 알고리즘). 구 방식은 게이지를 히트로 채우지 않고 아래 고정 시간이 지나면 찬 것으로 봅니다."><span>버스트 게이지</span><select id="burst-gauge-mode"><option value="new">신 방식 — 히트마다 실제 누적</option><option value="legacy">구 방식 — 고정 시간</option></select></label>
               <label title="조건이 갖춰진 뒤 실제로 버스트를 누르기까지 걸리는 시간입니다. 버스트 하나하나마다 더해지므로 3단계까지 쓰면 그 세 배만큼 늦어집니다."><span>버스트 반응속도</span><div class="input-unit"><input id="burst-reaction" type="number" min="0" max="3" step="0.01" value="${DEFAULT_BURST_REACTION}" /><em>초</em></div></label>
               <label><span>난수 처리</span><select id="rng-mode"><option value="expected">기대값 (권장)</option><option value="random">난수</option></select></label>
               <label class="toggle-field" title="족자 구간에는 평타가 빗나가므로 게이지도 차지 않는 것으로 계산합니다. 켜면 그만큼 버스트가 밀립니다."><input id="immune-blocks-burst" type="checkbox" checked /><span class="toggle"></span><span>족자 중 버스트 충전 정지</span></label>
@@ -1080,9 +1155,20 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
             <!-- 덱마다 따로 잡는 값들. **스위치 바로 아래에 그 칸이 선다** — 칸이
                  격자 저 아래에 떨어져 있어 켜고도 어디에 적는지 못 찾았다
                  (피드백 2026-09-08). -->
-            <div class="deck-split">
-              <label class="toggle-field deck-regen-toggle" title="버스트 쿨이 밀리는 덱만 다른 값으로 재고 싶을 때 켭니다"><input id="burst-regen-per-deck" type="checkbox" /><span class="toggle"></span><span>버스트 충전을 덱마다 따로</span></label>
-              <div class="deck-regen-grid" data-deck-regen hidden></div>
+            <!-- 구 방식(고정 시간) 전용 — 신 방식에서는 게이지가 히트로 차므로 이 값들이 쓰이지 않는다.
+                 「버스트 게이지」에서 구 방식을 골랐을 때만 보인다. 옛 저장본·코드는 신 방식으로 읽힌다. -->
+            <div class="legacy-burst" data-legacy-burst hidden>
+              <p class="field-note"><b>구 방식 전용</b> — 게이지를 히트로 채우지 않고 아래 시간이 지나면 찬 것으로 봅니다. 신 방식에서는 쓰지 않습니다.</p>
+              <div class="field-grid">
+                <label title="게이지 충전만의 시간입니다. 여기에 단계 전환 0.3초와 버스트 쿨 여유가 더해져 실제 공백은 더 깁니다."><span>버스트 게이지 충전</span><div class="input-unit"><input id="burst-regen" type="number" min="0" max="20" step="0.1" value="2" /><em>초</em></div></label>
+                <label title="전투 시작 기준 첫 버스트를 시작할 최소 시각입니다. 0초는 즉시 시작하며 단계 전환과 반응속도는 별도로 적용됩니다."><span>첫 버스트 시간</span><div class="input-unit"><input id="first-burst" type="number" min="0" max="3600" step="0.1" value="3" /><em>초</em></div></label>
+              </div>
+              <div class="deck-split">
+                <label class="toggle-field deck-regen-toggle"><input id="first-burst-per-deck" type="checkbox" /><span class="toggle"></span><span>첫 버스트 시간을 덱마다 따로</span></label>
+                <div class="deck-regen-grid" data-deck-first-burst hidden></div>
+                <label class="toggle-field deck-regen-toggle" title="버스트 쿨이 밀리는 덱만 다른 값으로 재고 싶을 때 켭니다"><input id="burst-regen-per-deck" type="checkbox" /><span class="toggle"></span><span>버스트 충전을 덱마다 따로</span></label>
+                <div class="deck-regen-grid" data-deck-regen hidden></div>
+              </div>
             </div>
             <div class="deck-split">
               <label class="toggle-field deck-regen-toggle" title="같은 편성을 코어 있는 판과 없는 판으로 나란히 재고 싶을 때 켭니다. 코어 크기는 위에서 정한 하나를 함께 씁니다"><input id="core-per-deck" type="checkbox" /><span class="toggle"></span><span>코어 유무를 덱마다 따로</span></label>
@@ -1099,15 +1185,25 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
             <fieldset class="range-field phase-field">
               <legend>보스 페이즈</legend>
               <div class="phase-head">
+                <button type="button" class="phase-add" data-phase-add="defense">+리버렐리오 바디 방어율 구간</button>
+                <button type="button" class="phase-add" data-phase-add="size">+보스 크기 구간</button>
+                <button type="button" class="phase-add" data-phase-add="range">+유효 사거리 구간</button>
+                <button type="button" class="phase-add" data-phase-add="core">+코어 노출 구간</button>
                 <button type="button" class="phase-add" data-phase-add="immune">족자 추가 <b>+</b></button>
                 <button type="button" class="phase-add" data-phase-add="element">속저 추가 <b>+</b></button>
               </div>
               <div class="phase-list" data-phase-list></div>
+              <p class="field-note">보스 크기 구간은 시작 포함·종료 제외입니다. 구간 밖은 기본 크기로 돌아가며, 겹치는 구간은 사용할 수 없습니다. 탄착군 방식에 적용되며 보스메이커 도형은 기본 직경 대비 비율로 확대·축소합니다.</p>
+              <p class="field-note">바디 방어율은 <a href="https://arca.live/b/nikketgv/183364010" target="_blank" rel="noopener noreferrer">유저 실험</a> 기반 가정입니다. 기본 60%는 일반 최종 대미지를 40%로 줄이며 방어 무시 대미지는 통과합니다. 방어 무시 대미지 증가 버프만으로 일반 공격이 방어 무시로 바뀌지 않습니다. 받는 대미지 효과와 독립 적용하며 방어력 감소와의 상호작용은 미검증입니다. 겹친 구간은 가장 높은 방어율만 적용됩니다.</p>
+              <p class="field-note">유효 사거리 구간 안에서는 체크한 무기군에 적정거리 보너스를 적용합니다. 모두 해제하면 해당 구간은 보너스가 없으며, 구간 밖은 기본 적정거리 설정을 따릅니다. 겹치는 구간은 선택한 무기군을 합칩니다.</p>
+              <p class="field-note">코어 노출 구간이 없으면 코어가 항상 노출됩니다. 구간을 추가하면 해당 시간에만 노출되며, 코어를 끄면 모든 구간에서 비활성화됩니다.</p>
               <p class="field-note"><b>족자</b>는 평타만 빗나갑니다. 지속 대미지·스킬 대미지와 평타로 발동한 후속 공격은 계속 들어갑니다. <b>속저</b>는 고른 속성에 <b>우월한</b> 캐릭터의 딜만 통과시킵니다 — 풍압으로 두면 작열 캐릭터만 들어갑니다. 인게임처럼 <b>우월 코드 버프</b>로 우월해진 캐릭터도 통과합니다(라피 : 레드 후드 «부착형 유탄» 등).</p>
             </fieldset>
           </div>
           <section class="console-editor">
             <h3>콘솔 <span>전초기지 재활용 연구실</span></h3>
+            <button type="button" class="text-button" data-console-restore>불러온 값으로 되돌리기</button>
+            <p class="field-note" data-console-restore-note></p>
             <div class="console-grid" data-console-grid></div>
             <p class="field-note">계정 설정이라 스쿼드 전원에게 같이 적용됩니다. 클래스·기업은 인게임에서 소속별로 따로 크므로 각각 받습니다. 기업은 공격력, 공통·클래스는 체력을 올립니다 — 체력 계수를 쓰는 캐릭터(신데렐라 등)는 공통·클래스도 딜에 반영됩니다.</p>
           </section>
@@ -1116,8 +1212,6 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
             <div class="hack-hero">
               <div class="hack-hero-bar" aria-hidden="true"></div>
               <b class="hack-hero-tag">CHEAT MODE</b>
-              <p class="hack-hero-line">7일만 쉬면 된다는 게임사의 공식적인 입장이 있었으니 마음껏 쓰세요</p>
-              <a class="hack-hero-link" href="https://gall.dcinside.com/mgallery/board/view/?id=gov&amp;no=6103271" target="_blank" rel="noreferrer noopener">공식적인 입장 보러 가기 ↗</a>
             </div>
             <div class="hack-grid">
               <label class="hack-card">
@@ -1146,10 +1240,9 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
           </div>
           </div>
           </div>
-          </div>
         </section>
 
-        <section class="panel result-panel" aria-labelledby="result-heading" data-result-panel>
+        <section class="panel result-panel" aria-labelledby="result-heading" data-view="calc" data-result-panel>
           <div class="result-empty"><h2 id="result-heading">전투 결과</h2><div class="radar-mark" aria-hidden="true"><i></i><i></i><i></i></div><p>편성과 조건을 확인한 뒤<br />시뮬레이션을 실행해 주세요.</p></div>
         </section>
       </form>
@@ -1356,8 +1449,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
           <p class="custom-desc">누가 편성됐는지(캐릭터 조합)만 주고받습니다. <b>오버로드·공격력·돌파 같은 개인 스펙과 전투 조건은 담기지 않습니다</b> — 적용하면 캐릭터만 바뀌고 스펙은 각자 자기 설정(CSV 로스터를 넣었다면 그 값)이 그대로 쓰입니다. ${SHARE_API ? '<b>서버로는 «올리기»를 누를 때만 전송됩니다.</b>' : '서버로 전송되지 않습니다.'}</p>
           <div class="share-scope" data-share-scope>
             <span class="share-scope-label">범위</span>
-            <button type="button" class="share-scope-pick is-on" data-share-scope-pick="one">이 덱만</button>
-            <button type="button" class="share-scope-pick" data-share-scope-pick="all">모든 덱</button>
+            <button type="button" class="share-scope-pick" data-share-scope-pick="one">이 덱만</button>
+            <button type="button" class="share-scope-pick is-on" data-share-scope-pick="all">모든 덱</button>
             <span class="share-scope-note" data-share-scope-note></span>
           </div>
           ${SHARE_API ? '<div class="share-tabs" data-share-tabs></div>' : ''}
@@ -1635,7 +1728,67 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     renderSquad();
   };
 
+  /** 세트에 니케가 하나라도 있나 — 단추에 점을 찍는 기준. */
+  const deckSetFilled = (key: DeckSetKey): boolean =>
+    (key === activeDeckSet ? decks : (sleepingDeckSets.get(key) ?? [])).some((deck) => deck.squad.some(Boolean));
+  const renderDeckSets = () => {
+    const host = root.querySelector<HTMLElement>('[data-deck-sets]');
+    if (!host) return;
+    host.replaceChildren();
+    for (const key of DECK_SETS) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.deckSet = key;
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-selected', String(key === activeDeckSet));
+      button.className = key === activeDeckSet ? 'deck-set is-on' : 'deck-set';
+      button.classList.toggle('has-decks', deckSetFilled(key));
+      const icon = key === '기본' ? null : createElementIcon(key, 'deck-set-icon');
+      if (icon) button.append(icon);
+      button.append(createText('span', key));
+      button.title = key === '기본'
+        ? '기본 덱 세트. 속성 세트를 누르면 편성 전체가 그 세트로 바뀌고, 세트마다 따로 저장됩니다'
+        : `${key} 보스용 덱 세트 — 누르면 편성 전체가 이 세트로 바뀝니다. 세트마다 따로 저장됩니다`;
+      button.addEventListener('click', () => switchDeckSet(key));
+      host.append(button);
+    }
+  };
+  /** 세트를 바꾼다 — 지금 덱을 재우고 그 세트의 덱을 깨운다. 빈 세트는 빈 덱 둘로 시작한다. */
+  const switchDeckSet = (key: DeckSetKey) => {
+    if (key === activeDeckSet) return;
+    sleepingDeckSets.set(activeDeckSet, decks.map((deck) => structuredClone(deck)));
+    const woken = sleepingDeckSets.get(key) ?? [];
+    sleepingDeckSets.delete(key);
+    decks.splice(0, decks.length, ...Array.from({ length: Math.max(2, woken.length) }, (_, index) => {
+      const deck = woken[index] ?? emptyDeck(index + 1);
+      deck.id = index + 1;
+      return deck;
+    }));
+    activeDeckSet = key;
+    activeDeckId = 1;
+    activeSlot = 0;
+    // 「누가 이 버프를 받았나」는 그 세트의 계산에서 온 것이라 다른 세트에는 뜻이 없다.
+    buffTargetsByDeck.clear();
+    // 덱이 둘 이상 찬 세트를 단일덱 모드로 보면 나머지가 안 보인다 — 여러덱 모드로 켠다.
+    if (!fiveDeckMode && decks.filter((deck) => deck.squad.some(Boolean)).length > 1) {
+      fiveDeckMode = true;
+      element<HTMLInputElement>(root, '#squad-mode').checked = true;
+      deckTabs.hidden = false;
+      deckMoves.hidden = false;
+      clearAllButton.hidden = false;
+      deckNote.hidden = false;
+      deckCopy.hidden = false;
+    }
+    closeCharPanel();
+    closeDeckCopy();
+    showErrors([]);
+    saveState();
+    renderDeckTabs();
+    renderSquad();
+    renderRosterGrid();
+  };
   const renderDeckTabs = () => {
+    renderDeckSets();
     element<HTMLElement>(root, '[data-deck-mode-label]').textContent = fiveDeckMode ? '여러덱 모드' : '단일덱 모드';
     deckTabs.replaceChildren();
     for (const deck of decks) {
@@ -1732,11 +1885,15 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         deckNote.replaceChildren(
           createText('b', `여러 덱에 겹친 니케 ${shared.length}명: `),
           createText('span', shared.map(([name, ids]) => `${name}(덱 ${ids.join('·')})`).join(', ')),
-          createText('em', ' — 견주려고 일부러 겹쳤다면 그대로 두셔도 됩니다. 한 번에 내보내는 편성이라면 겹칠 수 없습니다.'),
+          createText('em', raidMode
+            ? ' — 계산기 레이드에서는 한 니케는 한 덱에만 설 수 있습니다. 한쪽에서 빼 주세요.'
+            : ' — 견주려고 일부러 겹쳤다면 그대로 두셔도 됩니다. 한 번에 내보내는 편성이라면 겹칠 수 없습니다.'),
         );
         deckNote.classList.add('is-dup');
       } else {
-        deckNote.textContent = '덱 사이에는 같은 캐릭터를 다시 편성할 수 있습니다.';
+        deckNote.textContent = raidMode
+          ? '계산기 레이드 중 — 덱 사이에 같은 니케를 둘 수 없습니다.'
+          : '덱 사이에는 같은 캐릭터를 다시 편성할 수 있습니다.';
         deckNote.classList.remove('is-dup');
       }
     }
@@ -1768,12 +1925,14 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     add.dataset.deckAdd = '';
     add.addEventListener('click', () => {
       const regen = readDeckRegen();
+      const firstBurst = readDeckFirstBurst();
       const core = readDeckCore();
       const id = decks.length + 1;
       decks.push(emptyDeck(id));
       activeDeckId = id;
       activeSlot = 0;
       renderDeckRegen({ ...regen, [id]: Number(element<HTMLInputElement>(root, '#burst-regen').value) });
+      renderDeckFirstBurst({ ...firstBurst, [id]: Number(element<HTMLInputElement>(root, '#first-burst').value) });
       renderDeckCore({ ...core, [id]: coreToggle.checked });
       closeDeckCopy();
       saveState(); renderDeckTabs(); renderSquad();
@@ -1787,19 +1946,22 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     confirmTwice(remove, () => {
       if (decks.length <= 2) return;
       const regen = readDeckRegen();
+      const firstBurst = readDeckFirstBurst();
       const core = readDeckCore();
       decks.splice(decks.findIndex((deck) => deck.id === activeDeckId), 1);
       const nextRegen: Record<number, number> = {};
+      const nextFirstBurst: Record<number, number> = {};
       const nextCore: Record<number, boolean> = {};
       decks.forEach((deck, index) => {
         nextRegen[index + 1] = regen[deck.id] ?? 2;
+        nextFirstBurst[index + 1] = firstBurst[deck.id] ?? 0;
         nextCore[index + 1] = core[deck.id] ?? false;
         deck.id = index + 1;
       });
       activeDeckId = Math.min(activeDeckId, decks.length);
       activeSlot = 0;
       buffTargetsByDeck.clear();
-      renderDeckRegen(nextRegen); renderDeckCore(nextCore);
+      renderDeckRegen(nextRegen); renderDeckCore(nextCore); renderDeckFirstBurst(nextFirstBurst);
       closeDeckCopy();
       saveState(); renderDeckTabs(); renderSquad();
     }, { armed: '한 번 더 누르면 삭제' });
@@ -2708,6 +2870,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       card.className = 'squad-slot';
       card.dataset.slotCard = String(index);
       card.classList.toggle('is-preview', Boolean(char?.preview));
+      card.classList.toggle('is-fictional', Boolean(customPayload()[name]?.nikke.fabricated));
       makeDropTarget(card, index);
       if (name) {
         // 채워진 칸은 집어서 다른 칸에 놓을 수 있다 — ‹ › 단추와 같은 «자리 맞바꾸기»다.
@@ -2879,6 +3042,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
             scheduleSquadPower();
             // 이 콜백은 카드가 다시 그려지기 **직전**에 불린다 — 다 그린 뒤에 창을 맞춘다.
             queueMicrotask(syncOpenPanel);
+            // 설정 판은 스스로 다시 그리므로 잠금도 그 뒤에 다시 건다.
+            if (raidLocked()) queueMicrotask(() => lockCardForRaid(editor, stepper));
           }, buffTargetRowsFor(deck.id, cname), (row) => showBuffOrder(cname, row),
           (kind, panel, label) => {
             openCharPanel = { name: cname, kind };
@@ -2988,9 +3153,15 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
 
         renderEditor();
         card.append(editor);
-        card.append(copyFromControl(cname), spreadControl(cname));
-        const restore = restoreControl(cname);
-        if (restore) card.append(restore);
+        if (raidLocked()) {
+          // 레이드 중에는 육성이 블라블라링크 값으로 잠긴다 — 베껴오기·퍼뜨리기·되돌리기는
+          // 전부 수치를 옮기는 문이라 아예 안 낸다. 큐브만 산다.
+          lockCardForRaid(editor, stepper);
+        } else {
+          card.append(copyFromControl(cname), spreadControl(cname));
+          const restore = restoreControl(cname);
+          if (restore) card.append(restore);
+        }
       }
       squadGrid.append(card);
     }
@@ -3066,6 +3237,10 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     );
   };
   renderConsole();
+  const consoleRestore=element<HTMLButtonElement>(root,'[data-console-restore]');
+  const consoleRestoreNote=element<HTMLElement>(root,'[data-console-restore-note]');
+  const refreshConsoleRestore=()=>{consoleRestore.disabled=!importedConsole;consoleRestoreNote.textContent=importedConsole?'마지막으로 연동한 콘솔 레벨로 되돌립니다.':'되돌릴 콘솔 원본이 없습니다. 블라블라링크에서 전초기지를 공개하고 다시 연동해 주세요.';};
+  refreshConsoleRestore();
 
   const readConsoleBuckets = (axis: 'class' | 'company'): Record<string, number> =>
     Object.fromEntries([...consoleInputs[axis]].map(([bucket, input]) => [bucket, Number(input.value)]));
@@ -3147,6 +3322,10 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   // 구간은 개수가 정해지지 않아 입력을 미리 만들어 둘 수 없다 — 배열을 정본으로
   // 들고 그릴 때마다 새로 만든다. 입력값이 잘못돼도(시작>끝) 지우지 않고 그대로
   // 두고, 실행할 때 검증 메시지로 알린다.
+  let defenseRateWindows: Array<PhaseWindow & { rate: number }> = [];
+  let shotgunSizeWindows: Array<PhaseWindow & { diameter: number }> = [];
+  let coreWindows: PhaseWindow[] = [];
+  let optimalRangeWindows: Array<PhaseWindow & { weapons: string[] }> = [];
   let immuneWindows: PhaseWindow[] = [];
   let elementWindows: ElementWindow[] = [];
 
@@ -3165,25 +3344,90 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       return input;
     };
 
-    const row = (kind: 'immune' | 'element', index: number, from: number, to: number) => {
+    const row = (kind: 'size' | 'range' | 'defense' | 'core' | 'immune' | 'element', index: number, from: number, to: number) => {
       const box = document.createElement('div');
       box.className = `phase-row is-${kind}`;
       box.dataset.phaseRow = `${kind}:${index}`;
-      box.append(createText('span', kind === 'immune' ? '족자' : '속저', 'phase-tag'));
+      box.append(createText('span', kind === 'size' ? '보스 크기' : kind === 'range' ? '유효 사거리' : kind === 'defense' ? '바디 방어율' : kind === 'core' ? '코어 노출' : kind === 'immune' ? '족자' : '속저', 'phase-tag'));
       box.append(numberField(from, (v) => {
-        if (kind === 'immune') immuneWindows[index]!.from = v;
+        if (kind === 'size') shotgunSizeWindows[index]!.from = v;
+        else if (kind === 'range') optimalRangeWindows[index]!.from = v;
+        else if (kind === 'defense') defenseRateWindows[index]!.from = v;
+        else if (kind === 'core') coreWindows[index]!.from = v;
+        else if (kind === 'immune') immuneWindows[index]!.from = v;
         else elementWindows[index]!.from = v;
         saveState();
       }));
       box.append(createText('span', '~', 'phase-sep'));
       box.append(numberField(to, (v) => {
-        if (kind === 'immune') immuneWindows[index]!.to = v;
+        if (kind === 'size') shotgunSizeWindows[index]!.to = v;
+        else if (kind === 'range') optimalRangeWindows[index]!.to = v;
+        else if (kind === 'defense') defenseRateWindows[index]!.to = v;
+        else if (kind === 'core') coreWindows[index]!.to = v;
+        else if (kind === 'immune') immuneWindows[index]!.to = v;
         else elementWindows[index]!.to = v;
         saveState();
       }));
       box.append(createText('span', '초', 'phase-sep'));
       return box;
     };
+
+    shotgunSizeWindows.forEach((w, index) => {
+      const box = row('size', index, w.from, w.to);
+      const diameter = numberField(w.diameter, v => { w.diameter = v; saveState(); });
+      diameter.min = '1'; diameter.max = '2000'; diameter.step = '1';
+      diameter.ariaLabel = `보스 크기 ${index + 1} 직경`;
+      const drop = document.createElement('button'); drop.type = 'button'; drop.className = 'phase-drop'; drop.textContent = '✕'; drop.ariaLabel = `보스 크기 ${index + 1} 삭제`;
+      drop.addEventListener('click', () => { shotgunSizeWindows.splice(index, 1); saveState(); renderPhases(); });
+      box.append(diameter, createText('span', '모형 px', 'phase-sep'), drop); list.append(box);
+    });
+    defenseRateWindows.forEach((w, index) => {
+      const box = row('defense', index, w.from, w.to);
+      const rate = numberField(w.rate, (v) => { defenseRateWindows[index]!.rate = v; saveState(); });
+      rate.max = '100';
+      rate.ariaLabel = `바디 방어율 ${index + 1} (%)`;
+      box.append(rate, createText('span', '%', 'phase-sep'));
+      const drop = document.createElement('button');
+      drop.type = 'button';
+      drop.className = 'phase-drop';
+      drop.dataset.phaseDrop = `defense:${index}`;
+      drop.textContent = '✕';
+      drop.ariaLabel = `바디 방어율 ${index + 1} 삭제`;
+      drop.addEventListener('click', () => { defenseRateWindows.splice(index, 1); saveState(); renderPhases(); });
+      box.append(drop);
+      list.append(box);
+    });
+
+    optimalRangeWindows.forEach((w, index) => {
+      const box = row('range', index, w.from, w.to);
+      for (const weapon of settings.optimalRangeWeapons ?? ['AR', 'SMG', 'SG', 'MG', 'SR']) {
+        const label = document.createElement('label');
+        const check = document.createElement('input'); check.type = 'checkbox'; check.checked = w.weapons.includes(weapon);
+        check.ariaLabel = `유효 사거리 ${index + 1} ${weapon}`;
+        check.addEventListener('change', () => { w.weapons = check.checked ? [...w.weapons, weapon] : w.weapons.filter(v => v !== weapon); saveState(); });
+        label.append(check, document.createTextNode(weapon)); box.append(label);
+      }
+      const drop = document.createElement('button'); drop.type = 'button'; drop.className = 'phase-drop'; drop.textContent = '✕'; drop.ariaLabel = `유효 사거리 ${index + 1} 삭제`;
+      drop.addEventListener('click', () => { optimalRangeWindows.splice(index, 1); saveState(); renderPhases(); });
+      box.append(drop); list.append(box);
+    });
+
+    coreWindows.forEach((w, index) => {
+      const box = row('core', index, w.from, w.to);
+      const drop = document.createElement('button');
+      drop.type = 'button';
+      drop.className = 'phase-drop';
+      drop.dataset.phaseDrop = `core:${index}`;
+      drop.textContent = '✕';
+      drop.ariaLabel = `코어 노출 ${index + 1} 삭제`;
+      drop.addEventListener('click', () => {
+        coreWindows.splice(index, 1);
+        saveState();
+        renderPhases();
+      });
+      box.append(drop);
+      list.append(box);
+    });
 
     immuneWindows.forEach((w, index) => {
       const box = row('immune', index, w.from, w.to);
@@ -3234,13 +3478,17 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     });
   };
 
-  for (const kind of ['immune', 'element'] as const) {
+  for (const kind of ['size', 'range', 'defense', 'core', 'immune', 'element'] as const) {
     element<HTMLButtonElement>(root, `[data-phase-add="${kind}"]`).addEventListener('click', () => {
       // 마지막 구간 뒤를 기본값으로 잡아, 겹치지 않는 구간을 이어 붙이기 쉽게 한다.
-      const all = [...immuneWindows, ...elementWindows];
+      const all = kind === 'size' ? shotgunSizeWindows : kind === 'range' ? optimalRangeWindows : kind === 'defense' ? defenseRateWindows : kind === 'core' ? coreWindows : [...immuneWindows, ...elementWindows];
       const start = all.length > 0 ? Math.max(...all.map((w) => w.to)) : 0;
       const from = Math.min(start, 178);
-      if (kind === 'immune') immuneWindows.push({ from, to: Math.min(from + 2, 180) });
+      if (kind === 'size') shotgunSizeWindows.push({ from, to: Math.min(from + 2, 180), diameter: Number(element<HTMLInputElement>(root, '#shotgun-target-diameter').value) });
+      else if (kind === 'range') optimalRangeWindows.push({ from, to: Math.min(from + 2, 180), weapons: readOptimalRange() });
+      else if (kind === 'defense') defenseRateWindows.push({ from, to: Math.min(from + 2, 180), rate: 60 });
+      else if (kind === 'core') coreWindows.push({ from, to: Math.min(from + 2, 180) });
+      else if (kind === 'immune') immuneWindows.push({ from, to: Math.min(from + 2, 180) });
       else elementWindows.push({ from, to: Math.min(from + 2, 180), code: '풍압' });
       saveState();
       renderPhases();
@@ -3309,6 +3557,51 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       renderDeckRegen(Object.fromEntries(decks.map(({ id }) => [id, now])));
     }
     deckRegenBox.hidden = !deckRegenToggle.checked;
+    saveState();
+    refreshBattleSummary();
+  });
+
+  const deckFirstBurstBox = element<HTMLElement>(root, '[data-deck-first-burst]');
+  const deckFirstBurstToggle = element<HTMLInputElement>(root, '#first-burst-per-deck');
+  const readDeckFirstBurst = (): Record<number, number> => {
+    const out: Record<number, number> = {};
+    for (const input of deckFirstBurstBox.querySelectorAll<HTMLInputElement>('[data-deck-first-burst-input]')) {
+      out[Number(input.dataset.deckFirstBurstInput)] = Number(input.value);
+    }
+    return out;
+  };
+  const renderDeckFirstBurst = (values: Record<number, number>) => {
+    deckFirstBurstBox.replaceChildren();
+    for (const { id } of decks) {
+      const label = document.createElement('label');
+      label.append(createText('span', t('덱 {n}', { n: id })));
+      const wrap = document.createElement('div');
+      wrap.className = 'input-unit';
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.min = '0';
+      input.max = '3600';
+      input.step = '0.1';
+      input.value = String(values[id] ?? Number(element<HTMLInputElement>(root, '#first-burst').value));
+      input.dataset.deckFirstBurstInput = String(id);
+      input.addEventListener('change', () => { saveState(); refreshBattleSummary(); });
+      wrap.append(input, createText('em', '초'));
+      label.append(wrap);
+      deckFirstBurstBox.append(label);
+    }
+  };
+  const writeDeckFirstBurst = (values: Record<number, number> | undefined, fallback: number) => {
+    const on = values !== undefined && Object.keys(values).length > 0;
+    deckFirstBurstToggle.checked = on;
+    deckFirstBurstBox.hidden = !on;
+    renderDeckFirstBurst(values ?? Object.fromEntries(decks.map(({ id }) => [id, fallback])));
+  };
+  deckFirstBurstToggle.addEventListener('change', () => {
+    if (deckFirstBurstToggle.checked) {
+      const now = Number(element<HTMLInputElement>(root, '#first-burst').value);
+      renderDeckFirstBurst(Object.fromEntries(decks.map(({ id }) => [id, now])));
+    }
+    deckFirstBurstBox.hidden = !deckFirstBurstToggle.checked;
     saveState();
     refreshBattleSummary();
   });
@@ -3386,21 +3679,32 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     enemyCode: element<HTMLSelectElement>(root, '#enemy-code').value as BattleSettings['enemyCode'],
     coreEnabled: coreToggle.checked,
     corePx: Number(corePxInput.value),
+    shotgunModel: element<HTMLSelectElement>(root, '#shotgun-model').value as BattleSettings['shotgunModel'],
+    shotgunTargetDiameter: Number(element<HTMLInputElement>(root, '#shotgun-target-diameter').value),
+    bossSize: element<HTMLSelectElement>(root, '#boss-size').value as BattleSettings['bossSize'],
+    shotgunHitRate: Number(element<HTMLInputElement>(root, '#shotgun-hit-rate').value) / 100,
     hasParts: element<HTMLInputElement>(root, '#has-parts').checked,
     seed: Number(element<HTMLInputElement>(root, '#seed').value),
     optimalRangeWeapons: readOptimalRange(),
     // 배열은 화면이 아니라 이 변수가 정본이다 — 입력이 잘못돼도 지우지 않고
     // 그대로 실어 실행 시 검증 메시지로 알린다.
+    defenseRateWindows: defenseRateWindows.map((w) => ({ ...w })),
+    optimalRangeWindows: optimalRangeWindows.map(w => ({ ...w, weapons: [...w.weapons] })),
+    shotgunSizeWindows: shotgunSizeWindows.map(w => ({ ...w })),
+    coreWindows: coreWindows.map((w) => ({ ...w })),
     immuneWindows: immuneWindows.map((w) => ({ ...w })),
     elementWindows: elementWindows.map((w) => ({ ...w })),
     rngMode: element<HTMLSelectElement>(root, '#rng-mode').value as RngMode,
     immuneBlocksBurst: element<HTMLInputElement>(root, '#immune-blocks-burst').checked,
+    burstGaugeMode: element<HTMLSelectElement>(root, '#burst-gauge-mode').value === 'legacy' ? 'legacy' : 'new',
     normalHitCoeff: readHitCoeff(),
     burstRegenTime: Number(element<HTMLInputElement>(root, '#burst-regen').value),
     ...(element<HTMLInputElement>(root, '#burst-regen-per-deck').checked
       ? { burstRegenPerDeck: readDeckRegen() } : {}),
     ...(element<HTMLInputElement>(root, '#core-per-deck').checked
       ? { corePerDeck: readDeckCore() } : {}),
+    firstBurstTime: Number(element<HTMLInputElement>(root, '#first-burst').value),
+    ...(deckFirstBurstToggle.checked ? { firstBurstPerDeck: readDeckFirstBurst() } : {}),
     burstReaction: Number(element<HTMLInputElement>(root, '#burst-reaction').value),
     hacks: readHacks(),
     console: {
@@ -3410,6 +3714,22 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     },
   });
 
+  const refreshShotgunControls = () => {
+    const mode = element<HTMLSelectElement>(root, '#shotgun-model').value;
+    const spatial = mode !== 'legacy';
+    const size = element<HTMLSelectElement>(root, '#boss-size');
+    const rate = element<HTMLInputElement>(root, '#shotgun-hit-rate');
+    const diameter = element<HTMLInputElement>(root, '#shotgun-target-diameter');
+    rate.closest('label')!.hidden = spatial;
+    diameter.closest('label')!.hidden = !spatial;
+    rate.disabled = size.value !== 'custom';
+    diameter.disabled = size.value !== 'custom';
+    const labels = spatial ? ['큼 · 직경 360', '보통 · 직경 200', '작음 · 직경 120', '커스텀'] : ['큼 · 펠릿 100%', '보통 · 펠릿 90%', '작음 · 펠릿 80%', '커스텀'];
+    [...size.options].forEach((option, index) => { option.textContent = labels[index]!; });
+    element<HTMLElement>(root, '#shotgun-model-note').textContent = spatial
+      ? '명중 버프와 보스 판정 크기로 몸통·코어·빗나감을 함께 계산합니다. 크기·펠릿 분포는 모형 가정이며 실측 확정값이 아닙니다. 구간 밖은 기본 크기를 사용하며, 구간은 겹칠 수 없습니다. 보스메이커 도형은 구간 직경 ÷ 기본 직경 비율로 확대·축소합니다. 기존 방식 선택으로 즉시 되돌릴 수 있습니다.' + (mode === 'spatial-convergence-v1' ? ' 수렴 실험: 발사 후 탄착군 감소, 재장전 중 원본 변화속도로 회복한다고 가정합니다. 시간 규칙은 미검증입니다.' : '')
+      : '기존 방식은 명중 버프와 무관하게 고정 몸통 명중률을 적용합니다. 보스메이커에서는 기존 도형 판정을 사용합니다. 기존 저장 조건·공유 코드는 자동 변경하지 않습니다.';
+  };
   const writeBattle = (battle: BattleSettings) => {
     element<HTMLInputElement>(root, '#duration').value = String(battle.duration);
     // 싱크로 레벨이 없던 시절에 저장된 설정을 되살릴 때가 있다 — 기본값으로 채운다.
@@ -3419,15 +3739,28 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     element<HTMLSelectElement>(root, '#enemy-code').value = battle.enemyCode;
     coreToggle.checked = battle.coreEnabled;
     corePxInput.value = String(battle.corePx);
+    element<HTMLSelectElement>(root, '#shotgun-model').value = battle.shotgunModel ?? 'legacy';
+    element<HTMLInputElement>(root, '#shotgun-target-diameter').value = String(battle.shotgunTargetDiameter ?? 360);
+    element<HTMLSelectElement>(root, '#boss-size').value = battle.bossSize ?? 'large';
+    element<HTMLInputElement>(root, '#shotgun-hit-rate').value = String(Math.round((battle.shotgunHitRate ?? 1) * 10000) / 100);
+    element<HTMLInputElement>(root, '#shotgun-hit-rate').disabled = battle.bossSize !== 'custom';
+    refreshShotgunControls();
     corePxInput.disabled = !battle.coreEnabled;
     element<HTMLInputElement>(root, '#has-parts').checked = battle.hasParts;
     element<HTMLInputElement>(root, '#seed').value = String(battle.seed);
     writeOptimalRange(battle.optimalRangeWeapons ?? []);
+    defenseRateWindows = (battle.defenseRateWindows ?? []).map((w) => ({ ...w }));
+    optimalRangeWindows = (battle.optimalRangeWindows ?? []).map(w => ({ ...w, weapons: [...w.weapons] }));
+    shotgunSizeWindows = (battle.shotgunSizeWindows ?? []).map(w => ({ ...w }));
+    coreWindows = (battle.coreWindows ?? []).map((w) => ({ ...w }));
     immuneWindows = (battle.immuneWindows ?? []).map((w) => ({ ...w }));
     elementWindows = (battle.elementWindows ?? []).map((w) => ({ ...w }));
     renderPhases();
     element<HTMLSelectElement>(root, '#rng-mode').value = battle.rngMode ?? 'expected';
     element<HTMLInputElement>(root, '#immune-blocks-burst').checked = Boolean(battle.immuneBlocksBurst);
+    // 없는 저장본은 신 방식이다 — 이 항목이 생기기 전의 조건은 전부 그렇게 읽는다.
+    element<HTMLSelectElement>(root, '#burst-gauge-mode').value = battle.burstGaugeMode === 'legacy' ? 'legacy' : 'new';
+    element<HTMLElement>(root, '[data-legacy-burst]').hidden = battle.burstGaugeMode !== 'legacy';
     writeHitCoeff(battle.normalHitCoeff);
     if (battle.burstRegenTime !== undefined) {
       element<HTMLInputElement>(root, '#burst-regen').value = String(battle.burstRegenTime);
@@ -3437,6 +3770,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       String(battle.burstReaction ?? DEFAULT_BURST_REACTION);
     writeHacks(battle.hacks);
     writeDeckRegen(battle.burstRegenPerDeck, battle.burstRegenTime);
+    element<HTMLInputElement>(root, '#first-burst').value = String(battle.firstBurstTime ?? 0);
+    writeDeckFirstBurst(battle.firstBurstPerDeck, battle.firstBurstTime ?? 0);
     writeDeckCore(battle.corePerDeck, battle.coreEnabled);
     if (battle.console) {
       consoleCommon.value = String(battle.console.common_level);
@@ -3484,8 +3819,11 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     // 적혀 있는데 어떤 덱은 코어가 없다. 그 사실을 뒤에 붙인다.
     const perDeckCore = battle.corePerDeck
       ? ` · ${t('코어는 덱마다')}` : '';
-    battleSummary.textContent = summarizeBattle(battle) + perDeckCore;
+    battleSummary.replaceChildren(elementText(summarizeBattle(battle) + perDeckCore));
     quickCode.value = battle.enemyCode;
+    for(const select of [quickCode,element<HTMLSelectElement>(root,'#enemy-code')]){
+      refreshElementSelect(select,select===quickCode?'보스 코드':'적 코드');
+    }
     quickCore.checked = battle.coreEnabled;
     quickSynchro.disabled = accountSynchro === null;
     quickSynchro.checked = accountSynchro !== null && useAccountSynchro && battle.synchroLevel === accountSynchro;
@@ -3542,11 +3880,16 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
 
   /** 첫 계산 전 강조. 한 번이라도 열어 봤거나 계산을 돌렸으면 더 붙잡지 않는다. */
   const settleBattleNote = () => { battleFirstNote.hidden = true; };
+  let battleReturn: (() => void) | undefined;
   const setBattleOpen = (open: boolean) => {
     battleOpen.setAttribute('aria-expanded', String(open));
     battleModal.hidden = !open;
     refreshBattleSummary();
     if (open) settleBattleNote();
+    else {
+      battleModal.classList.remove('from-boss-maker');
+      const done = battleReturn; battleReturn = undefined; done?.();
+    }
   };
   battleOpen.addEventListener('click', () => { setBattleOpen(true); showBattleTab('battle'); });
   element<HTMLButtonElement>(root, '[data-hack-open]').addEventListener('click', () => {
@@ -3559,7 +3902,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     if (hitBackdrop(event, battleModal)) setBattleOpen(false);
   });
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !battleModal.hidden) setBattleOpen(false);
+    if (event.key === 'Escape' && !battleModal.hidden) { event.preventDefault(); setBattleOpen(false); }
   });
   /**
    * 창 안에서 엔터는 **계산이 아니라 「다 골랐다」**다.
@@ -3610,8 +3953,10 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
           messages.push(`덱 ${deck.id} · ${name}: ${meta?.label ?? key} 값이 허용 범위를 벗어났습니다.`);
         }
       }
-      if (custom.cube && (!settings.cubes[custom.cube.name] || !Number.isInteger(custom.cube.level)
-        || custom.cube.level < 1 || custom.cube.level > 15)) {
+      if (custom.cube && (custom.cube.name === NO_CUBE
+        ? custom.cube.level !== 0
+        : !settings.cubes[custom.cube.name] || !Number.isInteger(custom.cube.level)
+          || custom.cube.level < 1 || custom.cube.level > 15)) {
         messages.push(`덱 ${deck.id} · ${name}: 큐브 설정을 확인해 주세요.`);
       }
       if (custom.weaponModeSwapAt !== undefined && (
@@ -3635,6 +3980,11 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   // 전투 조건과 조합이 같은 서버·같은 판을 쓴다. 주소가 없으면 판을 아예 만들지
   // 않고 코드 주고받기만 남는다.
   const shareServer = SHARE_API ? new ShareServer(SHARE_API) : null;
+  /** 피드백 창에서 확인을 마친 어드민 비밀번호. 같은 창(sessionStorage) 안에서만 산다. */
+  const ADMIN_KEY = 'nikke-feedback-admin';
+  const readAdminPass = (): string => {
+    try { return sessionStorage.getItem(ADMIN_KEY) ?? ''; } catch { return ''; }
+  };
   const sharePanelHosts = (prefix: 'share' | 'battle-share') => ({
     tabs: element<HTMLElement>(root, `[data-${prefix}-tabs]`),
     upload: element<HTMLElement>(root, `[data-${prefix}-pane="upload"]`),
@@ -3916,7 +4266,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
    * 첫 덱이 지금 보고 있는 덱에 들어가고 나머지 덱은 그대로 남는다.
    */
   type ShareScope = 'one' | 'all';
-  let shareScope: ShareScope = 'one';
+  let shareScope: ShareScope = 'all';
   const scopeBox = element<HTMLElement>(root, '[data-share-scope]');
   const scopeNote = element<HTMLElement>(root, '[data-share-scope-note]');
 
@@ -4154,7 +4504,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     button.disabled = true;
     button.textContent = '수치 모으는 중…';
     try {
-      const parts: string[] = [];
+      const parts: DamageCsvDeck[] = [];
       let coarseOnly = false;
       for (const entry of batch.decks) {
         let result = entry.result;
@@ -4167,10 +4517,9 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         if (!result.fineTimeline) coarseOnly = true;
         const names = entry.request.squad.filter(Boolean);
         const note = `${entry.request.duration}초 · 적 방어력 ${entry.request.enemyDef}`;
-        if (batch.decks.length > 1) parts.push(csvText([[deckNameOf(entry.deckId)]]));
-        parts.push(damageCsv({ ...result, timeline }, names, note));
+        parts.push({ label: deckNameOf(entry.deckId), result: { ...result, timeline }, names, note });
       }
-      downloadImage(csvBlob(parts.join('\r\n\r\n')),
+      downloadImage(csvBlob(csvText(damageBatchRows(parts))),
         csvFileName(batch.decks.length > 1 ? `${batch.decks.length}덱` : `덱 ${batch.decks[0]?.deckId ?? 1}`));
       status.textContent = coarseOnly
         ? '정밀 수치 CSV를 내려받았습니다 (1초 단위 — 0.1초 표는 다시 계산해야 나옵니다).'
@@ -4345,7 +4694,20 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       renderBatchResult(batch);
     });
     detailLabel.append(detailBox, createText('span', '자세히 보기'));
-    reportTools.append(historySave, historyOpen, reportButton, csvButton, detailLabel);
+    const growthButton = document.createElement('button');
+    growthButton.type = 'button';
+    growthButton.className = 'report-open growth-open';
+    growthButton.dataset.growthEfficiency = '';
+    growthButton.textContent = '육성효율 계산하기';
+    growthButton.addEventListener('click', () => openGrowthEfficiency(batch, {
+      settings, catalog: catalogByName, deckName: deckNameOf,
+      current: (id, name) => decks.find(deck => deck.id === id)?.characters[name] ?? roster[name],
+      simulate: request => client.simulate(request),
+      performance: {max:client.maxPoolSize ?? 1,recommended:client.defaultPoolSize?.() ?? 1,
+        get:()=>parallelOn?parallelCount:1,
+        set:count=>{parallelCount=count;parallelOn=count>1;applyParallel(true);}},
+    }));
+    reportTools.append(historySave, historyOpen, reportButton, csvButton, growthButton, detailLabel);
     // 덱끼리 견주기 — 막대를 재는 자를 «그 덱의 1등»에서 «다섯 덱 통틀어 1등»으로
     // 바꾼다. 덱마다 제 1등을 100%로 그리면 어느 덱을 봐도 막대가 꽉 차서, 정작
     // 덱 사이의 차이가 그림에서 사라진다. 덱이 하나뿐이면 견줄 것이 없다.
@@ -4395,6 +4757,27 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         createText('small', dps(entry.result.squadTotal / entry.result.duration)),
       );
       section.append(deckHeader);
+      if (entry.request.squad.some(name => catalogByName.get(name)?.weaponType === 'SG') || Object.keys(entry.result.shotgunStats ?? {}).length) {
+        const heatmapButton = document.createElement('button');
+        heatmapButton.type = 'button';
+        heatmapButton.className = 'report-open shotgun-open';
+        heatmapButton.dataset.shotgunHeatmap = String(entry.deckId);
+        heatmapButton.textContent = '샷건 히트맵 보기';
+        heatmapButton.addEventListener('click', () => openShotgunHeatmap(entry, deckNameOf(entry.deckId), request => client.simulate(request)));
+        section.append(heatmapButton);
+      }
+      const fb = entry.result.timeline?.fullBurstSummary;
+      if (fb) {
+        const summary = createText('p', fb.count === 0 ? t('풀버스트 0회') :
+          t('풀버스트 {count}회 · 마지막 시작 {start}초 · 실제 지속 {duration}초', {
+            count: fb.count, start: fb.lastStart?.toFixed(2) ?? '—', duration: fb.lastDuration?.toFixed(2) ?? '—',
+          }) + (fb.lastTruncated ? t(' / 예정 {duration}초 · 전투 종료로 단축', { duration: fb.lastPlannedDuration?.toFixed(2) ?? '—' }) : ''),
+          fb.lastTruncated ? 'full-burst-summary is-truncated' : 'full-burst-summary');
+        summary.dataset.fullBurstSummary = '';
+        section.append(summary);
+      } else if (entry.result.timeline) {
+        section.append(createText('p', '풀버스트 요약은 다시 계산하면 표시됩니다.', 'full-burst-summary'));
+      }
       if (ranking.size > 1) {
         const rank = ranking.get(entry.deckId)!;
         const gap = best > 0 ? (entry.result.squadTotal / best - 1) * 100 : 0;
@@ -4459,9 +4842,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         const head = document.createElement('b');
         head.append(document.createTextNode(deckNameOf(entry.deckId)));
         head.append(createText('em', t('{n}위', { n: rank }), 'deck-tab-rank'));
-        // 덱끼리 견주는 자리라 줄이지 않고 온전한 숫자를 적는다 — «1.14억»으로는
-        // 2위와의 차이가 읽히지 않는다.
-        tab.append(head, createText('span', Math.round(entry.result.squadTotal).toLocaleString('ko-KR')));
+        tab.append(head, createText('span', dmg(entry.result.squadTotal)));
         tab.addEventListener('click', () => show(entry));
         buttons.set(entry.deckId, tab);
         tabs.append(tab);
@@ -4926,6 +5307,21 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   coreToggle.addEventListener('change', () => {
     corePxInput.disabled = !coreToggle.checked;
   });
+  element<HTMLSelectElement>(root, '#boss-size').addEventListener('change', () => {
+    const size = element<HTMLSelectElement>(root, '#boss-size').value;
+    const input = element<HTMLInputElement>(root, '#shotgun-hit-rate');
+    input.disabled = size !== 'custom';
+    if (size !== 'custom') input.value = String(({ large: 100, medium: 90, small: 80 } as Record<string, number>)[size]);
+    if (size !== 'custom') element<HTMLInputElement>(root, '#shotgun-target-diameter').value = String(({ large: 360, medium: 200, small: 120 } as Record<string, number>)[size]);
+    refreshShotgunControls();
+  });
+  element<HTMLSelectElement>(root, '#shotgun-model').addEventListener('change', refreshShotgunControls);
+  refreshShotgunControls();
+  // 구 방식 전용 칸(충전 시간·첫 버스트 시간)은 구 방식을 골랐을 때만 보인다.
+  const gaugeModeSelect = element<HTMLSelectElement>(root, '#burst-gauge-mode');
+  gaugeModeSelect.addEventListener('change', () => {
+    element<HTMLElement>(root, '[data-legacy-burst]').hidden = gaugeModeSelect.value !== 'legacy';
+  });
   // 전투 조건 입력이 바뀌면 저장한다.
   form.addEventListener('change', (event) => {
     const target = event.target as HTMLElement | null;
@@ -4939,6 +5335,12 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       // 싱크로·콘솔은 전투력을 통째로 바꾼다 — 편성 카드의 숫자도 따라가야 한다.
       scheduleSquadPower();
     }
+  });
+  consoleRestore.addEventListener('click',()=>{
+    if(!importedConsole)return;
+    writeBattle({...readBattle(),console:structuredClone(importedConsole)});
+    saveState();refreshBattleSummary();scheduleSquadPower();
+    consoleRestoreNote.textContent='불러온 콘솔 레벨로 되돌렸습니다.';
   });
   // ── 전투 조건 공유 ──────────────────────────────────────────────────────
   const battleShareModal = element<HTMLElement>(root, '[data-battle-share-modal]');
@@ -4980,6 +5382,74 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         showBattleShareMsg(`«${item.name}»을(를) 적용했습니다. 콘솔은 내 값 그대로입니다.`, true);
       },
       notify: showBattleShareMsg,
+      // 어드민에게만 — 이 조건으로 계산기 레이드를 연다. 제목은 물어서 받는다(공유 글의
+      // 이름이 곧 레이드 이름은 아니다 — «9월 3주 솔레» 같은 시즌 이름을 붙이고 싶어진다).
+      extra: (item) => {
+        if (!readAdminPass()) return null;
+        const box = document.createElement('div');
+        box.className = 'share-raid-extra';
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'share-raid-open';
+        button.dataset.shareRaidOpen = item.id;
+        button.textContent = '🏁 계산기 레이드로 올리기';
+        // 제목과 설명을 그 자리에서 고친다. 설명은 사이트가 전투 조건에서 만든 요약이
+        // 미리 들어가 있다 — 어드민이 쓴 글이 아니니 «너무 깁니다»로 막지 않고 고치게 둔다.
+        const form = document.createElement('div');
+        form.className = 'share-raid-form';
+        form.dataset.shareRaidForm = item.id;
+        form.hidden = true;
+        const title = document.createElement('input');
+        title.type = 'text';
+        title.maxLength = 40;
+        title.placeholder = '레이드 제목 (40자까지)';
+        title.value = item.name;
+        title.dataset.shareRaidTitle = '';
+        const auto = document.createElement('textarea');
+        auto.rows = 3;
+        auto.maxLength = 400;
+        auto.placeholder = '설명 (400자까지)';
+        auto.value = item.auto;
+        auto.dataset.shareRaidAuto = '';
+        const count = document.createElement('span');
+        count.className = 'share-raid-count';
+        const paintCount = () => { count.textContent = `${auto.value.length}/400`; };
+        paintCount();
+        auto.addEventListener('input', paintCount);
+        const go = document.createElement('button');
+        go.type = 'button';
+        go.className = 'share-raid-go';
+        go.dataset.shareRaidGo = item.id;
+        go.textContent = '레이드 열기';
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'share-raid-cancel';
+        cancel.dataset.shareRaidCancel = '';
+        cancel.textContent = '취소';
+        const actions = document.createElement('div');
+        actions.className = 'share-raid-actions';
+        actions.append(count, cancel, go);
+        form.append(title, auto, actions);
+        button.addEventListener('click', () => {
+          form.hidden = !form.hidden;
+          if (!form.hidden) title.focus();
+        });
+        cancel.addEventListener('click', () => { form.hidden = true; });
+        go.addEventListener('click', () => {
+          const name = title.value.trim().slice(0, 40);
+          if (!name) { showBattleShareMsg('레이드 제목을 적어 주세요.'); title.focus(); return; }
+          go.disabled = true;
+          raidHandle?.openRaid({ title: name, code: item.code, auto: auto.value.trim().slice(0, 400) }).then(
+            () => {
+              form.hidden = true;
+              showBattleShareMsg(`«${name}» 레이드를 열었습니다 — 계산기 레이드 탭에서 확인하세요.`, true);
+            },
+            (error: unknown) => showBattleShareMsg(error instanceof Error ? error.message : String(error)),
+          ).finally(() => { go.disabled = false; });
+        });
+        box.append(button, form);
+        return box;
+      },
     },
   );
 
@@ -5213,7 +5683,6 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   const filterGroups = (): Array<{ key: FilterKey; title: string; values: string[] }> => [
     { key: 'rarity', title: '등급', values: ['SSR', 'SR', 'R'] },
     { key: 'class', title: '클래스', values: ['화력형', '방어형', '지원형'] },
-    { key: 'code', title: '코드', values: ['작열', '수냉', '풍압', '전격', '철갑'] },
     { key: 'weapon', title: '무기', values: ['AR', 'SMG', 'SG', 'SR', 'RL', 'MG'] },
     { key: 'corp', title: '기업', values: ['엘리시온', '미실리스', '테트라', '필그림', '어브노말'] },
     { key: 'item', title: '애장품', values: ['있음', '없음'] },
@@ -5261,7 +5730,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     const label = SORTS.find((s) => s.key === sortKey)?.label;
     const pending = sortKey === 'power' && Object.keys(combatPower).length === 0;
     parts.push(`${t(label!)}${pending ? ` ${t('계산중')}` : sortDesc ? ' ▼' : ' ▲'}`);
-    for (const key of ['burst', ...filterGroups().map((group) => group.key)] as FilterKey[]) {
+    for (const key of ['burst', 'code', ...filterGroups().map((group) => group.key)] as FilterKey[]) {
       const set = picked[key];
       if (set.size > 0) {
         parts.push([...set].map((value) => labelOf(key, value)).join('·'));
@@ -5292,6 +5761,21 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   const renderFilterPanel = () => {
     const burstBox = element<HTMLElement>(root, '[data-burst-group]');
     burstBox.replaceChildren(...BURST_VALUES.map((value) => filterChip('burst', value)));
+
+    // 코드는 아이콘만 — 글자는 title·aria-label로 남긴다. 아이콘이 없는 코드는 없지만,
+    // 혹시 없으면 글자 칩으로 그대로 선다.
+    const codeBox = element<HTMLElement>(root, '[data-code-group]');
+    codeBox.replaceChildren(...ELEMENT_CODES.map((value) => {
+      const chip = filterChip('code', value);
+      const icon = createElementIcon(value, 'code-chip-icon');
+      if (icon) {
+        icon.removeAttribute('title');
+        chip.replaceChildren(icon);
+        chip.title = t('{code} 코드만 보기', { code: value });
+        chip.setAttribute('aria-label', value);
+      }
+      return chip;
+    }));
 
     const sortBox = element<HTMLElement>(root, '[data-sort-group]');
     sortBox.replaceChildren();
@@ -5458,6 +5942,14 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         cell.classList.add('is-taken');
         cell.title = `이미 덱 ${deck.id}의 ${takenAt + 1}번에 있습니다`;
       }
+      // 계산기 레이드 중에는 다른 덱에 선 니케도 못 고른다 — 한 니케는 한 덱에만.
+      // 돌릴 때 막는 것으로는 늦다: 다섯 덱을 다 짜고 나서야 «겹쳤다»를 듣게 된다.
+      const raidTakenIn = raidMode ? raidDeckOf(char.name, deck.id) : null;
+      if (raidTakenIn !== null) {
+        cell.disabled = true;
+        cell.classList.add('is-taken');
+        cell.title = `덱 ${raidTakenIn}에 이미 있습니다 — 계산기 레이드에서는 한 니케는 한 덱에만 섭니다`;
+      }
       const portrait = document.createElement('div');
       portrait.className = 'roster-portrait';
       if (char.image) {
@@ -5476,9 +5968,10 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       const codeIcon = createElementIcon(char.elementCode, 'roster-code');
       if (codeIcon) portrait.append(codeIcon);
       if (char.preview) {
-        // (임시) — 스킬 미공개라 창작한 값으로 도는 캐릭터. 고르기 전에 보여야 한다.
-        const temp = createText('i', '임시', 'roster-temp');
-        temp.title = '스킬이 공개되지 않아 임의로 창작한 값으로 계산합니다';
+        const fictional = Boolean(customPayload()[char.name]?.nikke.fabricated);
+        const temp = createText('i', fictional ? '임시' : '프리뷰', 'roster-temp');
+        temp.title = fictional ? '스킬이 공개되지 않아 임의로 창작한 값으로 계산합니다'
+          : '공개 카드 Lv10 기준 · 출시 전 정보이며 실제 성능은 미검증입니다';
         portrait.append(temp);
       }
       if (quickDeckOpen) {
@@ -5548,9 +6041,22 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     saveState();
   });
 
+  /** 레이드 편성 범위(단일덱이면 첫 덱만) 안에서 그 니케가 선 «다른» 덱. 없으면 null. */
+  const raidDeckOf = (name: string, exceptDeckId: number): number | null => {
+    const scope = fiveDeckMode ? decks : decks.slice(0, 1);
+    const other = scope.find((deck) => deck.id !== exceptDeckId && deck.squad.includes(name));
+    return other ? other.id : null;
+  };
   const pickCharacter = (name: string, targetSlot = activeSlot) => {
     if (quickDeckOpen && quickDeckComplete) return;
     const deck = activeDeck();
+    if (raidMode) {
+      const takenIn = raidDeckOf(name, deck.id);
+      if (takenIn !== null) {
+        showErrors([`${name}은(는) 덱 ${takenIn}에 이미 있습니다 — 계산기 레이드에서는 한 니케는 한 덱에만 설 수 있습니다.`]);
+        return;
+      }
+    }
     const slot = Math.max(0, Math.min(4, targetSlot));
     const previous = deck.squad[slot] ?? '';
     deck.squad[slot] = name;
@@ -5576,8 +6082,9 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     if (quickDeckOpen) rosterSearch.focus({ preventScroll: true });
     // (임시) 캐릭터는 넣는 순간 바로 알린다 — 결과까지 가서야 알면 이미 늦다.
     if (catalogByName.get(name)?.preview) {
-      status.textContent = `${name}은(는) 아직 (임시) 등록입니다 — 스킬이 공개되지 않아 `
-        + '임의로 창작한 값으로 계산합니다. 실제 성능과 무관하니 참고용으로만 봐 주세요.';
+      status.textContent = customPayload()[name]?.nikke.fabricated
+        ? `${name}은(는) 아직 (임시) 등록입니다 — 스킬이 공개되지 않아 임의로 창작한 값으로 계산합니다. 실제 성능과 무관하니 참고용으로만 봐 주세요.`
+        : `[프리뷰 · 미검증] ${name} — 공개 카드 Lv10 기준이며 실제 성능은 검증되지 않았습니다.`;
     }
   };
 
@@ -5671,7 +6178,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   element<HTMLButtonElement>(root, '[data-reset-confirm]').addEventListener('click', () => {
     cache.clear();
     const store = resolveStorage();
-    for (const key of [STATE_KEY, ROSTER_KEY, CUSTOM_KEY, ACCOUNT_SYNCHRO_KEY]) {
+    for (const key of [STATE_KEY, ROSTER_KEY, CUSTOM_KEY, ACCOUNT_SYNCHRO_KEY, IMPORTED_CONSOLE_KEY, PLANNER_KEY]) {
       try {
         store?.removeItem(key);
       } catch {
@@ -5828,6 +6335,9 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         // 콘솔은 계정 단위라 전투 설정 쪽에 있다. 전초기지가 비공개면 안 오고, 그때는
         // 손대지 않는 게 맞다 — 0으로 덮으면 멀쩡하던 값이 사라진다.
         const consoleLevels = consoleFrom(area);
+        importedConsole=consoleLevels?structuredClone(consoleLevels):null;
+        try{resolveStorage()?.setItem(IMPORTED_CONSOLE_KEY,JSON.stringify(importedConsole));}catch{}
+        refreshConsoleRestore();
         // 계정 레벨과 이번 계산의 레벨은 따로 보관한다. 재동기화해도 400 선택을 지킨다.
         const syncedLevel = synchroFrom(area);
         accountSynchro = syncedLevel !== null && syncedLevel <= SYNCHRO_MAX ? syncedLevel : null;
@@ -5907,8 +6417,6 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     const feedbackKind = element<HTMLSelectElement>(root, '[data-feedback-kind]');
     const feedbackSend = element<HTMLButtonElement>(root, '[data-feedback-send]');
     const feedbackAdminBar = element<HTMLElement>(root, '[data-feedback-admin-bar]');
-    const ADMIN_KEY = 'nikke-feedback-admin';
-
     let feedbackItems: FeedbackItem[] = [];
     // 지금 코멘트를 쓰고 있는 글. 목록은 통째로 다시 그려지므로 «어느 칸이 열려
     // 있나»를 여기 적어 둔다.
@@ -6481,10 +6989,13 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   const enikkLoad = element<HTMLButtonElement>(root, '[data-enikk-load]');
   const enikkRefresh = element<HTMLButtonElement>(root, '[data-enikk-refresh]');
   let enikkData: EnikkImport | null = null;
+  const enikkSeason=element<HTMLSelectElement>(root,'[data-enikk-season]');
+  let enikkSeasons:EnikkSeason[]=[];
+  let enikkBusy=false;
   // 300명을 한 줄로 늘어놓으면 스크롤이 끝없다 — 열 명씩 끊어 쪽으로 넘긴다.
   const ENIKK_PER_PAGE = 10;
   let enikkPage = 0;
-  let currentView: 'calc' | 'union' | 'lab' | 'enikk' | 'fun' | 'links' = 'calc';
+  let currentView: 'calc' | 'union' | 'enikk' | 'fun' | 'links' = 'calc';
 
   const readEnikkCache = (): EnikkImport | null => {
     try {
@@ -6776,6 +7287,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
 
   const renderCompare = async () => {
     if (!enikkData) return;
+    const comparisonData=enikkData;
     const targets = enikkData.players.slice(0, COMPARE_TOP);
     if (targets.length === 0) return;
     const total = targets.reduce((sum, p) => sum + p.decks.filter((d) => d.usable).length, 0);
@@ -6795,7 +7307,9 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
 
     const battle = readBattle();
     const custom = customPayload();
+    const active=()=>enikkData===comparisonData && table.isConnected;
     await prepared;
+    if(!active())return;
     let done = 0;
     for (const [index, player] of targets.entries()) {
       let simTotal = 0;
@@ -6813,6 +7327,7 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         let result = cache.get(key);
         if (!result) {
           result = await client.simulate(request);
+          if(!active())return;
           cache.set(key, result);
         }
         simTotal += result.squadTotal;
@@ -6843,37 +7358,37 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     setEnikkStatus(`상위 ${targets.length}명 대조 완료.`);
   };
 
-  const loadEnikk = async (force: boolean) => {
-    if (!force) {
-      const cached = readEnikkCache();
-      if (cached) {
-        renderEnikk(cached);
-        setEnikkStatus('저장해 둔 결과입니다. 새로 받으려면 «다시 받기»를 누르세요.');
-        enikkLoad.hidden = true;
-        enikkRefresh.hidden = false;
-        return;
-      }
-    }
-    enikkLoad.disabled = true;
-    enikkRefresh.disabled = true;
+  const clearEnikkResults=()=>{enikkData=null;enikkPage=0;enikkSummary.replaceChildren();enikkSummary.hidden=true;enikkList.replaceChildren();enikkList.hidden=true;enikkCompare.replaceChildren();enikkCompare.hidden=true;};
+  const lockEnikk=(busy:boolean)=>{enikkBusy=busy;enikkLoad.disabled=busy;enikkRefresh.disabled=busy;enikkSeason.disabled=busy;};
+  const refreshEnikkSeasons=async()=>{
+    if(enikkBusy)return;
+    lockEnikk(true);setEnikkStatus('시즌 목록을 새로고침하는 중…');
     try {
-      const supported = new Set(catalog.map((char) => char.name));
-      const data = await loadEnikkComps(catalog, supported, setEnikkStatus);
-      writeEnikkCache(data);
-      renderEnikk(data);
-      setEnikkStatus(`플레이어 ${data.players.length}명 · 덱 ${data.decks}개를 읽었습니다.`);
-      enikkLoad.hidden = true;
-      enikkRefresh.hidden = false;
-    } catch (error) {
-      setEnikkStatus(error instanceof Error ? error.message : String(error));
-    } finally {
-      enikkLoad.disabled = false;
-      enikkRefresh.disabled = false;
-    }
+      const selected=Number(enikkSeason.value)||enikkData?.season.raid;
+      const seasons=await fetchSeasons();enikkSeasons=seasons;
+      enikkSeason.replaceChildren(...seasons.map(season=>new Option(`시즌 ${season.raid} · ${season.boss} · ${WEAKNESS_KO[season.weakness]??season.weakness} 약점`,String(season.raid))));
+      enikkSeason.value=String(seasons.some(s=>s.raid===selected)?selected:seasons[0]!.raid);
+      if(enikkData&&enikkData.season.raid!==Number(enikkSeason.value))clearEnikkResults();
+      setEnikkStatus('시즌을 선택한 뒤 조합 가져오기를 누르세요.');
+    }catch(error){setEnikkStatus(error instanceof Error?error.message:String(error));}
+    finally{lockEnikk(false);}
   };
-
-  enikkLoad.addEventListener('click', () => { void loadEnikk(false); });
-  enikkRefresh.addEventListener('click', () => { void loadEnikk(true); });
+  const loadEnikk=async()=>{
+    if(enikkBusy)return;
+    if(!enikkSeasons.length)await refreshEnikkSeasons();
+    const season=enikkSeasons.find(s=>s.raid===Number(enikkSeason.value));
+    if(!season)return;
+    lockEnikk(true);clearEnikkResults();
+    try {
+      const data=await loadEnikkComps(catalog,new Set(catalog.map(char=>char.name)),setEnikkStatus,season);
+      writeEnikkCache(data);renderEnikk(data);
+      setEnikkStatus(`시즌 ${season.raid} · 플레이어 ${data.players.length}명 · 덱 ${data.decks}개를 읽었습니다.`);
+    }catch(error){setEnikkStatus(error instanceof Error?error.message:String(error));}
+    finally{lockEnikk(false);}
+  };
+  enikkSeason.addEventListener('change',()=>{clearEnikkResults();setEnikkStatus('선택한 시즌의 조합 가져오기를 눌러 주세요.');});
+  enikkLoad.addEventListener('click',()=>{void loadEnikk();});
+  enikkRefresh.addEventListener('click',()=>{void refreshEnikkSeasons();});
 
   // ── 지금 보는 사람 수 ───────────────────────────────────────────────────
   // 공유 서버가 세 준다. 주소가 없으면 아예 띄우지 않는다 — 0명이라고 적어 두면
@@ -6946,12 +7461,28 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       settings,
       catalog: [...catalogByName.values()],
       simulate: (request) => client.simulate(request),
+      decks: () => decks.map(deck => ({ id: String(deck.id), name: deck.name || `덱 ${deck.id}`, squad: deck.squad.filter(Boolean) })),
+      currentDeckId: () => String(activeDeckId),
+      selectDeck: (id) => {
+        const selected = decks.find(deck => String(deck.id) === id); if (!selected) return;
+        activeDeckId = selected.id;
+        const empty = selected.squad.findIndex(member => !member); activeSlot = empty < 0 ? 0 : empty;
+        saveState(); renderDeckTabs(); renderSquad();
+      },
+      currentBurstSequence: () => requestForDeck(activeDeck(), readBattle()).burstSequence,
       currentSquad: () => activeDeck().squad.filter(Boolean),
       currentCharacters: () => Object.fromEntries(
         Object.entries(activeDeck().characters)
           .map(([name, value]) => [name, overridesForEngine(value)]),
       ),
       currentBattle: readBattle,
+      currentRequest: () => requestForDeck(activeDeck(), readBattle(), customPayload()),
+      openBattleEditor: (done) => {
+        battleReturn = done;
+        battleModal.classList.add('from-boss-maker');
+        setBattleOpen(true); showBattleTab('battle');
+      },
+      currentBurstRegenTime: () => { const battle = readBattle(); return battle.burstRegenPerDeck?.[activeDeckId] ?? battle.burstRegenTime; },
       // 값을 폼에 써넣는 것만으로는 남지 않는다 — 폼은 사람이 만질 때(change) 저장되는데
       // 프로그램이 넣은 값에는 그 이벤트가 없다. 보스 메이커에서 잡은 족자·속저가
       // 새로고침에 날아가던 이유라, 쓰는 자리에서 저장까지 함께 한다.
@@ -6974,6 +7505,149 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       } : {}),
     },
   );
+  // ── 계산기 레이드 (BETA) ────────────────────────────────────────────────
+  // 어드민이 올린 전투 조건 하나로 모두가 다섯 덱을 돌린다. 이 탭이 켜지면 전투 조건
+  // 뭉치가 숨고, 편성 카드는 큐브만 남기고 잠긴다 — 육성은 블라블라링크 값으로만 돈다.
+  const raidPane = element<HTMLElement>(root, '[data-raid-pane]');
+  const battleHome = element<HTMLElement>(root, '[data-battle-home]');
+  const raidLockNote = element<HTMLElement>(root, '[data-raid-lock]');
+  const raidBand = element<HTMLElement>(root, '[data-raid-band]');
+  const raidDot = element<HTMLElement>(root, '[data-raid-dot]');
+  const paintRaidLockNote = () => {
+    raidLockNote.textContent = raidMock
+      ? '🧪 모의전 — 수치 설정·컨트롤을 자유롭게 바꿔 보세요. 결과는 랭킹에 올라가지 않습니다.'
+      : RAID_LOCK_NOTE;
+    root.classList.toggle('is-raid', raidLocked());
+  };
+  const setRaidMode = (on: boolean) => {
+    if (raidMode === on) return;
+    raidMode = on;
+    raidPane.hidden = !on;
+    battleHome.hidden = on;
+    raidLockNote.hidden = !on;
+    paintRaidLockNote();
+    // 열려 있던 수치 설정 창은 닫는다 — 잠긴 값을 창에서 만지게 두면 잠근 뜻이 없다.
+    closeCharPanel();
+    renderDeckTabs();
+    renderSquad();
+    renderRosterGrid();
+    // 돌아왔을 때 결과 판에 마지막 레이드 결과를 다시 세운다.
+    if (on) raidHandle?.showLast();
+  };
+  if (shareServer) {
+    raidHandle = mountRaid(raidPane, {
+      server: shareServer,
+      catalog: catalogByName,
+      // 단일덱 모드에서는 보이는 덱 하나만 — 안 보이는 두 번째 덱이 몰래 실리면 안 된다.
+      decks: () => (fiveDeckMode ? decks : decks.slice(0, 1)),
+      roster: () => roster,
+      // 식별은 블라블라링크 프로필 주소에서 꺼낸 계정 번호다. 로스터가 블라블라링크에서
+      // 온 것이 아니면(CSV·손) «이은 계정»이 아니다 — 스펙이 그 계정 것이 아니니까.
+      account: () => {
+        if (rosterSource !== 'blabla') return null;
+        let saved: { url?: string; area?: number } | null = null;
+        try {
+          const raw = resolveStorage()?.getItem('nikke-blabla-profile-v1');
+          saved = raw ? JSON.parse(raw) as { url?: string; area?: number } : null;
+        } catch { saved = null; }
+        const openid = openidFromProfileUrl(saved?.url ?? '');
+        if (!openid) return null;
+        return { openid, area: saved?.area ?? 0, console: importedConsole };
+      },
+      battleFallback: readBattle,
+      simulate: async (request) => {
+        await prepared;
+        const key = cacheKey(request, version);
+        const kept = cache.get(key);
+        if (kept) return kept;
+        const result = await client.simulate(request);
+        cache.set(key, result);
+        return result;
+      },
+      // 남의 덱을 내 판에 — 편성만. 스펙은 내 로스터가 얹힌다. 큐브를 함께 받았으면
+      // 그것만 덮어쓴다(카탈로그에 없는 큐브·없는 레벨은 건너뛴다 — 요청이 깨진다).
+      // 컨트롤(톡톡이·장전컨·홀드·버스트 운용·무기 모드 전환)을 함께 받았으면 그것도 얹는다.
+      applyDecks: (codes, cubes, controls) => {
+        const names = catalog.map((char) => char.name);
+        const count = Math.max(2, codes.length);
+        while (decks.length < count) decks.push(emptyDeck(decks.length + 1));
+        codes.forEach((code, index) => {
+          const payload = decodeShareCode(code, names);
+          applyShareToDecks(
+            payload, decks,
+            (name) => catalogByName.has(name),
+            (name) => (roster[name] ? cloneOverride(roster[name]!) : undefined),
+            { into: index, from: 0 },
+          );
+          const deck = decks[index];
+          if (!deck) return;
+          const worn = cubes?.[index];
+          for (const [name, cube] of Object.entries(worn ?? {})) {
+            if (!deck.squad.includes(name)) continue;
+            const known = cube.name === NO_CUBE || Boolean(settings.cubes[cube.name]?.levels[String(cube.level)]);
+            if (!known) continue;
+            const base = deck.characters[name] ? cloneOverride(deck.characters[name]!) : {};
+            base.cube = { name: cube.name, level: cube.name === NO_CUBE ? 0 : cube.level };
+            deck.characters[name] = base;
+          }
+          for (const [name, ctl] of Object.entries(controls?.[index] ?? {})) {
+            if (!deck.squad.includes(name)) continue;
+            const base = deck.characters[name] ? cloneOverride(deck.characters[name]!) : {};
+            if (ctl.control) base.control = structuredClone(ctl.control); else delete base.control;
+            if (ctl.burst) base.burst = structuredClone(ctl.burst); else delete base.burst;
+            if (ctl.weaponModeSwapAt !== undefined) base.weaponModeSwapAt = ctl.weaponModeSwapAt;
+            else delete base.weaponModeSwapAt;
+            deck.characters[name] = base;
+          }
+        });
+        if (codes.length > 1 && !fiveDeckMode) {
+          fiveDeckMode = true;
+          element<HTMLInputElement>(root, '#squad-mode').checked = true;
+          deckTabs.hidden = false;
+          deckMoves.hidden = false;
+          clearAllButton.hidden = false;
+          deckNote.hidden = false;
+        }
+        activeDeckId = 1;
+        saveState();
+        renderDeckTabs();
+        renderSquad();
+      },
+      adminPass: readAdminPass,
+      engineVersion: version,
+      // 레이드도 계산이다 — 덱별 결과를 평소의 전투 결과 판에 그대로 세운다.
+      showResults: (entries) => renderBatchResult(aggregateDeckResults(entries)),
+      defaultCube: (name) => settings.characters[name]?.cube,
+      // 모의전은 평소 계산기와 같은 요청이다 — 덱의 수치 설정·컨트롤·임시 니케까지 그대로.
+      mockRequest: (deck, battle) => {
+        const custom = customPayload();
+        return requestForDeck(deck, battle, Object.keys(custom).length > 0 ? custom : undefined);
+      },
+      onMock: (on) => {
+        raidMock = on;
+        paintRaidLockNote();
+        closeCharPanel();
+        renderSquad();
+      },
+      imageOf: (name) => {
+        const image = catalogByName.get(name)?.image;
+        return image ? `${import.meta.env.BASE_URL}${image}` : undefined;
+      },
+      onRaids: (raids) => {
+        const open = raids.filter((raid) => raid.status === 'open');
+        raidBand.hidden = open.length === 0;
+        raidDot.hidden = open.length === 0;
+        element<HTMLElement>(root, '[data-raid-band-list]').textContent = open.map((raid) => raid.title).join(' · ');
+      },
+    });
+    void raidHandle.refresh();
+  } else {
+    const note = document.createElement('p');
+    note.className = 'field-note';
+    note.textContent = '공유 서버가 없는 빌드입니다 — 계산기 레이드는 서버가 있어야 열립니다.';
+    raidPane.append(note);
+  }
+
   // 탭처럼 오간다 — 보스 메이커를 열면 그 탭이 켜지고, 닫으면 전투 조건으로 돌아온다.
   const settingsTabs = [...root.querySelectorAll<HTMLButtonElement>('[data-settings-tab]')];
   const markSettingsTab = (which: string) => {
@@ -6986,11 +7660,20 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   for (const tab of settingsTabs) {
     tab.addEventListener('click', () => {
       const which = tab.dataset.settingsTab ?? 'battle';
+      // 보스 메이커를 닫으면 onClose가 «전투 조건» 탭을 켠다 — 그래서 닫기를 먼저 하고
+      // 그 뒤에 이번 탭을 켠다(레이드 탭이 닫기에 지워지지 않게).
+      if (which !== 'maker') bossMaker.close();
       markSettingsTab(which);
+      setRaidMode(which === 'raid');
       if (which === 'maker') bossMaker.open();
-      else bossMaker.close();
+      else if (which === 'raid') void raidHandle?.refresh();
     });
   }
+  element<HTMLButtonElement>(root, '[data-raid-band-go]').addEventListener('click', () => {
+    switchView('calc');
+    settingsTabs.find((tab) => tab.dataset.settingsTab === 'raid')?.click();
+    if (typeof raidPane.scrollIntoView === 'function') raidPane.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  });
 
   // ── 오버효율 (BETA) ─────────────────────────────────────────────────────
   // 옵션 두 벌을 같은 자리에 놓고 견주는 판. 편성도 조건도 계산기 쪽 것을 빌려 쓰므로
@@ -7053,10 +7736,15 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
   // ── 화면 전환 ───────────────────────────────────────────────────────────
   // 유니온 탭이 없는 배포(프록시 미설정)에서는 손잡이도 없다.
   /** 위쪽 탭이 고를 수 있는 화면. 「외부고리」는 우리 것이 아닌 곳으로 나가는 판이다. */
-  type ViewName = 'calc' | 'union' | 'lab' | 'enikk' | 'fun' | 'links';
 
-  function switchView(view: ViewName) {
+
+  function writeViewUrl(replace = false) {
+    const hash = viewHash(currentView, funView);
+    if (location.hash !== hash) history[replace ? 'replaceState' : 'pushState'](null, '', location.pathname + location.search + hash);
+  }
+  function switchView(view: ViewName, updateUrl = true) {
     currentView = view;
+    if (updateUrl) writeViewUrl();
     // 개인용은 계산기에 잡아 둔 내 스펙으로 돈다 — 탭에 들어올 때 다시 읽는다.
     // 모드를 켤 때 한 번만 읽으면, 그 뒤 전투 조건에서 싱크로를 바꿔도 옛 값으로 돈다.
     if (view === 'union') unionHandle?.refreshMe();
@@ -7073,30 +7761,35 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       tab.classList.toggle('is-on', on);
       tab.setAttribute('aria-pressed', String(on));
     }
-    if (view === 'enikk' && !enikkData) {
-      const cached = readEnikkCache();
-      if (cached) {
-        renderEnikk(cached);
-        setEnikkStatus('저장해 둔 결과입니다. 새로 받으려면 «다시 받기»를 누르세요.');
-        enikkLoad.hidden = true;
-        enikkRefresh.hidden = false;
-      }
+    if(view==='enikk'&&!enikkSeasons.length&&!enikkBusy){
+      const cached=readEnikkCache();
+      if(cached){renderEnikk(cached);}
+      void refreshEnikkSeasons();
     }
   }
   for (const tab of root.querySelectorAll<HTMLButtonElement>('[data-view-tab]')) {
     tab.addEventListener('click', () => switchView(tab.dataset.viewTab as ViewName));
   }
 
-  // ── 재미용 기능 ─────────────────────────────────────────────────────────
-  // 안쪽 단추로 다시 갈리는 판이다. 지금은 「니케 시각화」 하나지만, 새 놀이는
-  // `FUN_VIEWS`에 한 줄 더하고 그리는 함수만 붙이면 된다.
+  // ── 편의 기능 ─────────────────────────────────────────────────────────
   const funTabs = element<HTMLElement>(root, '[data-fun-tabs]');
   const funBody = element<HTMLElement>(root, '[data-fun-body]');
+  const skillPlanner = createSkillPlanner({
+    catalog: () => catalog, roster: () => roster, storage: resolveStorage,
+    importProfile: () => {
+      if (blablaProxy) element<HTMLButtonElement>(root, '[data-blabla-open]').click();
+      else switchView('calc');
+    },
+  });
   const FUN_VIEWS = [
+    { key: 'pickups', label: '픽업 연표', note: '역대 신규 픽업·복각 일정과 캐릭터별 기록' },
+    { key: 'skills', label: '스킬칩 계산기', note: '현재 레벨부터 목표 레벨까지 필요한 매뉴얼을 계산합니다' },
+    { key: 'lab', label: '오버효율', note: '오버효율' },
+    { key: 'mcp', label: 'MCP', note: 'ChatGPT·Claude에서 계산기를 사용하는 방법' },
     { key: 'vision', label: '오버옵 시각화', note: '불러온 프로필의 오버로드 옵션을 초상화 크기로 봅니다' },
   ] as const;
-  type FunView = (typeof FUN_VIEWS)[number]['key'];
-  let funView: FunView = 'vision';
+
+  let funView: FunView = 'skills';
   let visionMetric: VisionMetric = 'element';
   /**
    * 수치를 동그라미에 적을지. **기본은 끔** — 이 화면의 값은 크기 그 자체이고,
@@ -7346,6 +8039,19 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     funBody.append(svg);
   };
 
+  const getMcpShare = () => {
+    const battle = readBattle();
+    const custom = customPayload();
+    return buildMcpShare(roster,
+      requestForDeck({ id: 0, squad: [], characters: {} }, battle),
+      decks.filter((deck) => deck.squad.some(Boolean)).map((deck) =>
+        requestForDeck(deck, battle, Object.keys(custom).length ? custom : undefined)));
+  };
+  const browserMcp = new BrowserMcpConnection(getMcpShare);
+  const disconnectMcp = () => browserMcp.disconnect();
+  window.addEventListener('pagehide', disconnectMcp);
+  const pickupHost = document.createElement('div');
+  let pickupStarted = false;
   const renderFun = () => {
     funTabs.replaceChildren();
     for (const view of FUN_VIEWS) {
@@ -7357,10 +8063,22 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
       button.setAttribute('aria-selected', String(view.key === funView));
       button.title = view.note;
       button.textContent = view.label;
-      button.addEventListener('click', () => { funView = view.key; renderFun(); });
+      if (view.key === 'lab') button.append(createText('b', 'BETA', 'tab-beta'));
+      button.addEventListener('click', () => { funView = view.key; renderFun(); writeViewUrl(); });
       funTabs.append(button);
     }
+    funBody.hidden = funView === 'lab';
+    element<HTMLElement>(root, '[data-overload-lab]').hidden = funView !== 'lab';
     if (funView === 'vision') renderVision();
+    if (funView === 'skills') skillPlanner.render(funBody);
+    if (funView === 'mcp') renderMcpGuide(funBody, browserMcp);
+    if (funView === 'pickups') {
+      funBody.replaceChildren(pickupHost);
+      if (!pickupStarted) {
+        pickupStarted = true;
+        void renderPickupHistory(pickupHost, catalog);
+      }
+    }
   };
 
   // ── 외부고리 ────────────────────────────────────────────────────────────
@@ -7510,6 +8228,8 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
         // 새로고침해도 「누가 이 버프를 받았나」가 남게 한다 — 다시 계산하기 전까지
         // 빈 괄호만 보이면 기능이 꺼진 것처럼 보인다.
         buffTargets: [...buffTargetsByDeck].map(([id, v]) => ({ id, ...v })),
+        deckSet: activeDeckSet,
+        deckSets: Object.fromEntries(sleepingDeckSets),
       }));
     } catch {
       /* 저장 실패 무시 */
@@ -7537,6 +8257,26 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
           if (deck.squad.includes(name)) deck.characters[name] = override;
         }
       });
+    }
+    // 잠든 세트도 되살린다 — 모르는 니케는 걸러 낸다(카탈로그가 바뀌었을 수 있다).
+    const setKeys = new Set<string>(DECK_SETS);
+    if (typeof savedState.deckSet === 'string' && setKeys.has(savedState.deckSet)) {
+      activeDeckSet = savedState.deckSet as DeckSetKey;
+    }
+    for (const [key, saved] of Object.entries(savedState.deckSets ?? {})) {
+      if (!setKeys.has(key) || key === activeDeckSet || !Array.isArray(saved)) continue;
+      sleepingDeckSets.set(key as DeckSetKey, saved.map((deck, index) => {
+        const squad = (deck.squad ?? ['', '', '', '', '']).map((name) => (name && catalogByName.has(name) ? name : ''));
+        const characters: DeckState['characters'] = {};
+        for (const [name, override] of Object.entries(deck.characters ?? {})) {
+          if (squad.includes(name)) characters[name] = override;
+        }
+        return {
+          id: index + 1, squad, characters,
+          ...(deck.name?.trim() ? { name: deck.name.trim() } : {}),
+          ...(deck.burstSequence ? { burstSequence: deck.burstSequence } : {}),
+        };
+      }));
     }
     // 「누가 이 버프를 받았나」는 서명이 지금 편성·설정과 맞을 때만 되살린다.
     // 어긋나면 지난 계산의 값이라 그대로 믿을 수 없다.
@@ -7587,6 +8327,17 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     shareIn.value = linked;
     shareModal.hidden = false;
   }
+
+  const restoreViewUrl = () => {
+    if (!root.isConnected) return;
+    const route = parseViewHash(location.hash);
+    if (route.utility) funView = route.utility;
+    switchView(route.view === 'union' && !blablaProxy ? 'calc' : route.view, false);
+    writeViewUrl(true);
+  };
+  restoreViewUrl();
+  window.addEventListener('popstate', restoreViewUrl);
+  window.addEventListener('hashchange', restoreViewUrl);
 
   // 취소하면 작업 스레드가 죽고 새로 서므로 이 약속도 다시 세워야 한다 — 옛 약속은
   // 이미 «준비됨»이라 그대로 두면 다음 계산이 안 올라온 런타임에 요청을 던진다.
@@ -7729,5 +8480,5 @@ export function mountCalculator(root: HTMLElement, deps: CalculatorDependencies)
     }
   });
 
-  return () => { stopCountdown(); stopLocalize(); client.dispose(); };
+  return () => { window.removeEventListener('popstate', restoreViewUrl); window.removeEventListener('hashchange', restoreViewUrl); stopCountdown(); stopLocalize(); client.dispose(); browserMcp.disconnect(); window.removeEventListener('pagehide', disconnectMcp); };
 }
