@@ -60,13 +60,15 @@ describe('generated browser runtime', () => {
     ) as RuntimeManifest;
 
     expect(manifest.version).toMatch(/^[a-f0-9]{16}$/);
-    expect(manifest.files).toHaveLength(30);
+    // 버스트 실누적표(`data/burst_gauge.json`)가 늘면서 31이다.
+    expect(manifest.files).toHaveLength(31);
     expect(manifest.files).toContain('calculator/shotgun_heatmap.py');
     expect(manifest.files).toContain('calculator/pellet_accuracy.py');
     expect(manifest.files).toContain('recommendation.py');
     expect(manifest.files).toContain('squad_policy.py');
     expect(manifest.files).toContain('growth_comparison.py');
     expect(manifest.files).toContain('context/growth.py');
+    expect(manifest.files).toContain('data/burst_gauge.json');
     // 브리지가 import하는 모듈이 목록에서 빠지면 엔진 초기화가 통째로 실패한다.
     expect(manifest.files).toContain('calculator/combat_power.py');
     expect(manifest.files).toContain('calculator/cheats.py');
