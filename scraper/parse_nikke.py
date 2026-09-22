@@ -48,13 +48,13 @@ def parse_weapon_skill(text: str, is_charge: bool) -> dict:
         print(f"  [WARN] core_dmg_mult 파싱 실패: {text!r}", file=sys.stderr)
 
     if is_charge:
-        m = re.search(r'차지 시간:\s*([\d.]+)초', text)
+        m = re.search(r'차지 시간\s*:\s*([\d.]+)초', text)
         if m:
             result["charge_time"] = float(m.group(1))
         else:
             print(f"  [WARN] charge_time 파싱 실패: {text!r}", file=sys.stderr)
 
-        m = re.search(r'풀 차지 대미지:\s*([\d.]+)% 대미지', text)
+        m = re.search(r'풀 차지 대미지\s*:\s*([\d.]+)% 대미지', text)
         if m:
             result["full_charge_mult"] = float(m.group(1))
         else:
@@ -98,6 +98,8 @@ def parse_fire_mechanics(weapon: dict) -> dict:
         result["pellets"] = int(weapon["펠릿"])
     if weapon.get("총구"):
         result["muzzles"] = int(weapon["총구"])
+    if weapon.get("탄착군"):
+        result["spread"] = dict(weapon["탄착군"])
     return result
 
 

@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -13,11 +14,44 @@ describe('generated browser runtime', () => {
       readFileSync(join(publicDir, 'catalog.json'), 'utf8'),
     ) as CharacterMeta[];
 
-    expect(catalog).toHaveLength(200);
+    expect(catalog).toHaveLength(202);
     expect(catalog.every((char) => !char.name.startsWith('test_'))).toBe(true);
-    // 프리뷰(출시 전) 항목은 출시되면 정식 등록되며 사라진다. 지금은 없다
-    // (PARSING-CHARS §프리뷰). 남아 있으면 화면에 (임시) 경고가 붙는다.
+    // 두 바니까지 정식 출시 원문과 레벨 1~10 반영 완료.
     expect(catalog.filter((char) => char.preview).map((char) => char.name)).toEqual([]);
+  });
+
+  it('exports released bunny identifiers, all skill levels and portraits', () => {
+    const catalog = JSON.parse(readFileSync(join(publicDir, 'catalog.json'), 'utf8')) as CharacterMeta[];
+    for (const [name, resourceId] of [['길티 : 마이티 바니', 404], ['신 : 스위프트 바니', 405]] as const) {
+      const character = catalog.find((item) => item.name === name)!;
+      expect(character).toMatchObject({ preview: false, resourceId });
+      expect(character.nameCode).toBeTypeOf('number');
+      expect(character.image).toMatch(/^characters\/[a-f0-9]+\.webp$/);
+      expect(character.info!.skills).toHaveLength(3);
+      for (const skill of character.info!.skills) {
+        expect(Object.keys(skill.values)).toEqual(Array.from({ length: 10 }, (_, i) => String(i + 1)));
+      }
+    }
+  });
+
+  it('binds every portrait URL to its character and source bytes, never a roster position', () => {
+    const catalog = JSON.parse(readFileSync(join(publicDir, 'catalog.json'), 'utf8')) as CharacterMeta[];
+    const sourceDir = join(publicDir, '..', '..', 'image');
+    const normalize = (name: string) => name.replaceAll(' ', '').replaceAll(':', '').replaceAll('_', '').toLocaleLowerCase('ko');
+    const sources = new Map(readdirSync(sourceDir).filter(name => name.endsWith('.webp'))
+      .map(name => [normalize(name.slice(0, -5)), name]));
+    let checked = 0;
+    for (const character of catalog) {
+      const source = sources.get(normalize(character.name));
+      if (!source) continue;
+      const bytes = readFileSync(join(sourceDir, source));
+      const identity = createHash('sha256').update(character.name).update('\0').update(bytes).digest('hex').slice(0, 20);
+      expect(character.image, character.name).toBe(`characters/${identity}.webp`);
+      expect(readFileSync(join(publicDir, character.image!)).equals(bytes), character.name).toBe(true);
+      checked++;
+    }
+    expect(checked).toBe(catalog.length);
+    expect(catalog.find(c => c.name === '플로라')!.image).not.toBe(catalog.find(c => c.name === '하란')!.image);
   });
 
   it('lists only runtime files that exist and have content', () => {
@@ -26,8 +60,15 @@ describe('generated browser runtime', () => {
     ) as RuntimeManifest;
 
     expect(manifest.version).toMatch(/^[a-f0-9]{16}$/);
-    expect(manifest.files).toHaveLength(25);
+    // 버스트 실누적표(`data/burst_gauge.json`)가 늘면서 31이다.
+    expect(manifest.files).toHaveLength(31);
+    expect(manifest.files).toContain('calculator/shotgun_heatmap.py');
+    expect(manifest.files).toContain('calculator/pellet_accuracy.py');
+    expect(manifest.files).toContain('recommendation.py');
+    expect(manifest.files).toContain('squad_policy.py');
+    expect(manifest.files).toContain('growth_comparison.py');
     expect(manifest.files).toContain('context/growth.py');
+    expect(manifest.files).toContain('data/burst_gauge.json');
     // 브리지가 import하는 모듈이 목록에서 빠지면 엔진 초기화가 통째로 실패한다.
     expect(manifest.files).toContain('calculator/combat_power.py');
     expect(manifest.files).toContain('calculator/cheats.py');

@@ -45,6 +45,17 @@ class FakeWorker implements WorkerLike {
 }
 
 describe('CalculatorWorkerClient', () => {
+  it('dispatches recommendation to the dedicated request type', async () => {
+    const worker = new FakeWorker();
+    const client = new CalculatorWorkerClient(() => worker);
+    const pending = client.recommend({ candidates: [{ label: 'one', squad: ['리타'] }],
+      roster: { 리타: { growthStage: 0 } }, battle: request });
+    const message = worker.messages[0]!;
+    expect(message.type).toBe('recommend');
+    expect(message.payload).toMatchObject({ roster: { 리타: { growthStage: 0 } } });
+    worker.respond({ id: message.id, type: 'result', payload: result });
+    await expect(pending).resolves.toEqual(result);
+  });
   it('matches out-of-order results to their request ids', async () => {
     const worker = new FakeWorker();
     const client = new CalculatorWorkerClient(() => worker);
@@ -157,6 +168,17 @@ describe('CalculatorPool', () => {
     answer(made[0]!);
     await expect(second).resolves.toEqual(result);
     expect(made).toHaveLength(1);
+  });
+
+  it('caps workers when many requests arrive during preparation', async () => {
+    const {pool,made}=spawn();pool.setPoolSize(2);
+    const tasks=Array.from({length:8},()=>pool.simulate(request));
+    const settled=Promise.allSettled(tasks);
+    await Promise.resolve();ready(made[0]!);
+    await new Promise(done=>setTimeout(done,0));
+    const count=made.length;
+    pool.cancel();await settled;
+    expect(count).toBe(2);
   });
 
   it('상한을 넘겨 잡아도 상한에서 멈춘다', () => {

@@ -20,8 +20,11 @@ import random
 from typing import Any
 
 from .base_stat import calc_base_stats
-from .buff_manager import BuffManager, _QUANT_PARTS_KEY, _get_skill_lv
+from .buff_manager import BuffManager, BURST_GAUGE_EXCEPTIONS, _QUANT_PARTS_KEY, _get_skill_lv
 from .cheats import from_config as cheats_from_config
+from .customization import normalize_optimal_range_windows
+from .pellet_accuracy import probabilities as pellet_probabilities
+from .shotgun_heatmap import ShotgunHeatmap
 from .damage import calc_damage, default_hit_type, is_element_match
 from .sim_result import (
     HitEvent,
@@ -30,6 +33,7 @@ from .sim_result import (
     BuffEntry,
     BuffEvent,
     BuffSnapshot,
+    GaugeLogEntry,
     InstantEvent,
     ReloadLogEntry,
     AmmoLogEntry,
@@ -151,14 +155,27 @@ DEFAULT_CONFIG: dict = {
     # 안 찬다고 본다. 끄면 족자 중에도 충전이 이어진다.
     # 족자를 안 쓰면 어느 쪽이든 결과가 같다.
     "immune_blocks_burst": True,
+    # 버스트 게이지 사이클 판정 — "fixed"(고정 시간: first_burst_time·burst_regen_time) /
+    # "accumulate"(실누적: 히트당 burst_energy를 공용 게이지에 쌓아 100%에 1단계 진입).
+    # 엔진 기본은 종전과 같은 "fixed"라 골든 스냅샷이 움직이지 않는다. 사이트는 신 방식
+    # (accumulate)이 기본이다. 정본: 원본 저장소 docs/mechanics/버스트 게이지.md (2026-09-22 이식)
+    "burst_gauge_mode":   "fixed",
+    # 카메라(풀차지 게이지 배율을 받는 니케). None이면 컨트롤에서 유도한다 — _resolve_cameras().
+    # 빈 문자열은 아무도 안 봄. 버충 톡톡이 담당이 있으면 무조건 그 사람이다.
+    "camera":             None,
+    # "single"(정확히 1명) / "shared"(컨트롤 켠 전원 — 비현실적 상한).
+    "camera_mode":        "single",
 }
 
 DEFAULT_ENEMY: dict = {
     "def":                  31784,
     "code":                 None,
     "core_px":              0,    # 코어 직경(px). 0이면 코어 없음, >0이면 코어히트율 확률 계산
+    "core_windows":         [],   # 코어 노출 [시작, 끝). 비어 있으면 항상 노출
+    "defense_rate_windows": [],   # [시작, 끝, 방어율%]; 중첩 시 최댓값, 방어 무시 대미지는 우회
     "has_parts":            False,# 파괴 가능 파츠 보유 보스. part_hit_count / part_dmg_pct의 전제
     "optimal_range_weapons": [],  # 적정거리 적용 무기군 목록 e.g. ["SG", "SMG"]
+    "optimal_range_windows": [],  # [from, to) 무기군 합집합; 구간 밖은 상시 설정
     # 보스 페이즈 구간. 둘 다 `[시작초, 끝초)` 반개구간이고 여러 개를 넣을 수 있다.
     #   immune_windows  — 족자: 그 구간 동안 평타가 적중하지 않는다
     #   element_windows — 속저: 그 구간 동안 **그 코드에 우월한** 캐릭터의 딜만 들어간다
@@ -317,6 +334,11 @@ class CharState:
         # 총구 수: 1회 발사에 동시에 나가는 탄 묶음 수. 실제 히트 수 = pellets × muzzles.
         # CDN damage(= 스킬 텍스트의 대미지 표기)는 총구당 값이라 총량이 총구 수만큼 늘어난다.
         self.muzzles: int = int(_pick("muzzles", _delay_exc, weapon_data, mech, default=1))
+        # 히트당 버스트 게이지(%). 한 발이 만드는 게이지 = burst_energy × pellets × muzzles.
+        # CDN `target_burst_energy_pershot`/10000 값(parsed_nikke `burst_energy`, «대상» 기준).
+        # 캐릭터별 값이 없으면 무기군 기본값(weapon_mechanics `burst_energy`)으로 떨어진다.
+        self.burst_energy: float = float(
+            _pick("burst_energy", _delay_exc, weapon_data, mech, default=0.0))
 
         # charge (SR/RL)
         if self.fire_mode == "charge":
@@ -366,10 +388,16 @@ class CharState:
         # 라플라스 : 얼티밋 히어로의 SMG 모드는 탄착군이 매우 좁아 사실상 명중 100%다
         # (유저 확인, 2026-09-04). 실측은 `weapon_delays._weapon_change`에 적고
         # 여기로 올라온다. 0이면 종전과 같다.
-        self.accuracy_floor_pct: float = 0.0
+        self.accuracy_floor_pct: float = float('-inf')
+        self._spread_spec = weapon_data.get('spread', {})
+        self._spread_scale = float(self._spread_spec.get('start', 250))
+        self._spread_reload_at = None
+        self.shotgun_stats = {}
+        self._shotgun_heatmap = None
         # 연사 무기 모드는 진입 시 self.ammo를 모드 장탄으로 덮어쓴다(원래 장탄은 버린다).
         # 모드가 끝날 때 되돌려 놓아야 그 값이 원래 무기로 새어 나가지 않는다.
         self._wc_ammo_borrowed: bool = False
+        self._wc_refill_on_exit = False
 
         # 모드 지정 플래그: 수동 재장전으로 진입하는 weapon_change 모드를 쓰는가.
         # 진입에 필요한 재장전만 삽입하고 진입 후에는 삽입하지 않아 모드를 유지한다.
@@ -378,6 +406,7 @@ class CharState:
 
         # ── 컨트롤 (유저 조작 재현). 정본: context/CONTROL.md ─────────────
         control = char.get("control") or {}
+        self.bunny_mode = control.get("bunny_mode", "engage")
 
         # 톡톡이: 차지를 끝까지 하지 않고 짧게 눌렀다 떼기를 반복 (차지형 전용).
         # hold(누름) + release(뗌)로 주기를 만들고, hold가 유효 차지 시간 이상이면
@@ -406,6 +435,12 @@ class CharState:
         # 하는 조작이다. 논차지 샷은 `full_charge_hit`를 발동시키지 않으므로, 톡톡이만
         # 켜면 그 버프가 통째로 죽는다 (밀크 : 블루밍 바니 `관통 특화` 6초).
         self.tap_full_charge_interval: float = float((tap or {}).get("full_charge_interval", 0.0))
+        # 버충 톡톡이: 풀버스트 **밖에서만** 톡톡이하고, 풀버스트 동안은 평소처럼 풀차지를 든다.
+        # 실제 조작은 «풀버스트가 끝나면 재장전 → 다음 풀버스트까지 톡톡이 → 풀버스트에는
+        # 풀차지»가 한 세트다(피드백 2026-09-22). 재장전은 아래 `_apply_tap_reload`가 건다.
+        self.tap_policy: str = str((tap or {}).get("policy", "always"))
+        self.tap_reload_at_end: bool = bool((tap or {}).get("reload_at_end", True))
+        self._tap_reload_anchor: float = -1.0
         self._last_full_charge_t: float = -1e9
         self._force_full_charge: bool = False
         self._wc_skill_damage: bool = False
@@ -495,6 +530,7 @@ class CharState:
                 self._in_weapon_change = True
                 self._wc_shots = 0
                 self._wc_new_session = True
+                self._wc_refill_on_exit = bool(wc_eff.get("refill_on_exit"))
             # 자기 탄창을 관리하는 모드(지속형 + 유한 장탄)만 모드 안에서 재장전을 완료시킨다.
             # 처리하지 않으면 장탄 소진 후 재장전이 끝나지 않아 발사가 영원히 멈춘다.
             # 시한부 모드(duration 있음)나 무한 장탄 모드는 기존 동작을 유지한다 —
@@ -513,6 +549,8 @@ class CharState:
             self._in_weapon_change = False
             self._wc_dynamic_ammo = None
             self.next_fire_time = t
+            if self._wc_refill_on_exit:
+                self._restore_special_magazine(t, bm)
             if self._wc_ammo_borrowed:
                 # 시한부 연사 모드가 duration으로 끝났다. 진입 시 덮어쓴 모드 장탄
                 # (무한 장탄이면 센티널 999999)이 그대로 남아 원래 무기의 탄창으로
@@ -701,7 +739,14 @@ class CharState:
         hit_count = split * self.muzzles
 
         expected = cfg.get("rng_mode") == "expected"
+        P_hit, P_core = self._pellet_probabilities(t, bm, enemy, buffs, P_core, hit_count)
+        landed = 0
+        core_frac = 0.0
         for i in range(hit_count):
+            if P_hit <= 0 or (not expected and P_hit < 1 and random.random() >= P_hit):
+                continue
+            landed += 1
+            weight = P_hit if expected else 1.0
             # 히트마다 독립 샘플링 (SG: 10회, 기타: 1회). 기대값 모드는 판정 대신 확률을 넘긴다
             # (P_core가 1이면 판정할 게 없으므로 기대값 모드에서도 코어 히트로 남긴다)
             is_core = (P_core >= 1.0) if expected else (random.random() < P_core)
@@ -736,7 +781,7 @@ class CharState:
             # «이 사람은 코어를 몇 %나 맞히나»를 태그 없이 셀 수 있다.
             core_frac = P_core if expected else (1.0 if is_core else 0.0)
             # 변신 모드 사격은 스킬 대미지 취급이라 평타 계수를 태우지 않는다.
-            shot_damage = _apply_hit_coeff(res["damage"], cfg, self.weapon_type,
+            shot_damage = _apply_hit_coeff((res["damage"] if weight == 1 else round(res["damage"] * weight)), cfg, self.weapon_type,
                                            self._wc_is_skill_damage())
             events.append(HitEvent(t=t, caster=self.name, damage=shot_damage,
                                    is_crit=res["is_crit"], hit_tag=tag,
@@ -745,20 +790,43 @@ class CharState:
                                       if self._wc_is_skill_damage() else {})))
             events.extend(self._pierce_extra(
                 ht=ht, base_damage=shot_damage, is_crit=res["is_crit"], buffs=buffs,
-                enemy=enemy, cfg=cfg, expected=expected, t=t, tag=tag,
+                enemy=enemy, cfg=cfg, expected=expected, t=t, tag=tag, hit_weight=weight,
             ))
-            bm.notify("pellet_hit", t, self.name)
+            _notify_frac(bm, "pellet_hit", self.name, weight, lambda: bm.notify("pellet_hit", t, self.name))
             body_ev = "squad_part_hit" if enemy.get("has_parts", False) else "squad_body_hit"
-            _notify_frac(bm, body_ev, self.name, 1.0 - core_frac,
+            _notify_frac(bm, body_ev, self.name, weight * (1.0 - core_frac),
                          lambda: bm.notify_team_hit(body_ev, t, self.name))
-            _notify_frac(bm, "crit_hit", self.name, res["crit_frac"],
+            _notify_frac(bm, "crit_hit", self.name, weight * res["crit_frac"],
                          lambda: bm.notify("crit_hit", t, self.name))
-            _notify_frac(bm, "core_hit", self.name, core_frac,
+            _notify_frac(bm, "core_hit", self.name, weight * core_frac,
                          lambda: bm.notify("core_hit", t, self.name))
 
+        # 「일반 공격 1회로 펠릿 N개 이상 명중 시」 — 이 **한 발**의 명중 펠릿 수로 판정한다.
+        # 누적 카운터(`pellet_hit_count:N`)와 다른 축이라 별도 이벤트다. 기대값 모드는
+        # 기대 명중 수로 본다.
+        _gauge_hits = hit_count * P_hit if expected else float(landed)
+        for _need, _raw in bm.pellet_in_shot_thresholds(self.name):
+            if _gauge_hits >= _need - 1e-9:
+                bm.notify(f"pellet_hit_in_shot:{_raw}", t, self.name)
+
+        # 일반 공격 명중은 충전 창 밖에서도 시전자 기준 버충값을 `(발당)`→`(대상)`으로 전환한다.
+        if _gauge_hits > 0 and not self._wc_is_skill_damage():
+            bm.mark_normal_attack_landed(self.name)
+
+        # 버스트 게이지: 명중 수만큼. 오토 무기라 풀차지 배율이 걸릴 자리가 없다.
+        # 버프 표는 명중 표시 **뒤**에 다시 읽는다 — 첫 명중이 버충속 기준값을 바꾼다.
+        if _gauge_hits > 0 and self._weapon_gauge_lands(bm, t):
+            gauge_buffs = bm.get_buffs(self.name, "__enemy__", t)
+            bm.add_burst_gauge(self._burst_gain(gauge_buffs, _gauge_hits), t, self.name, "weapon")
+
         # hit_count: 발사 1회당 1회 (펠릿 수와 무관). pellet_hit은 루프 내 펠릿마다 발생
-        bm.notify(f"multi_hit:{hit_count}", t, self.name)
-        bm.notify("hit_count", t, self.name)
+        if expected and 0 < P_hit < 1:
+            bm.notify(f"multi_hit:{hit_count}", t, self.name, pellet_probability=P_hit)
+        elif landed:
+            bm.notify(f"multi_hit:{landed}", t, self.name)
+        attack_hit = (1 - (1 - P_hit) ** hit_count) if expected else float(landed > 0)
+        _notify_frac(bm, "hit_count", self.name, attack_hit,
+                     lambda: bm.notify("hit_count", t, self.name, core_frac=core_frac))
         bm.notify("on_attack", t, self.name)
         if not self._wc_is_skill_damage():
             bm.consume_bullet_buffs(self.name, t)
@@ -769,7 +837,7 @@ class CharState:
 
     def _pierce_extra(
         self, *, ht: dict, base_damage: int, is_crit: bool, buffs: dict, enemy: dict,
-        cfg: dict, expected: bool, t: float, tag: str,
+        cfg: dict, expected: bool, t: float, tag: str, hit_weight: float = 1.0,
     ) -> list[HitEvent]:
         """관통이 꿰뚫고 지나간 **나머지 대상** 몫.
 
@@ -798,7 +866,7 @@ class CharState:
                 base_atk=self.base_atk, buffs=buffs, weapon=self.weapon,
                 hit_type=part_ht, enemy_def=enemy.get("def", 31784), expected=expected,
             )
-            part_damage = _apply_hit_coeff(part_res["damage"], cfg, self.weapon_type,
+            part_damage = _apply_hit_coeff((part_res["damage"] if hit_weight == 1 else round(part_res["damage"] * hit_weight)), cfg, self.weapon_type,
                                            self._wc_is_skill_damage())
             for _ in range(parts):
                 extra.append(HitEvent(t=t, caster=self.name, damage=part_damage,
@@ -821,6 +889,49 @@ class CharState:
         # 단축량이 기본 차지 시간을 넘으면 차지 시간은 실제로 0초가 된다 (유저 확인).
         return max(0.0, max(0.0, self.charge_time_base - cut)
                    + buffs.get("charge_time_flat", 0.0))
+
+    def _tap_active(self, bm: BuffManager) -> bool:
+        """지금 톡톡이로 쏘는가. `burst_charge` 정책은 풀버스트 밖(버충 구간)에서만 톡톡이다."""
+        if not self.tap_fire:
+            return False
+        if self.tap_policy == "burst_charge":
+            return not bm.state.get("full_burst", False)
+        return True
+
+    def _weapon_gauge_lands(self, bm: BuffManager, t: float) -> bool:
+        """이 무기 사격이 버스트 게이지를 채우는가.
+
+        족자(`enemy["immune_windows"]`, `immune_blocks_burst`) 중에는 평타가 빗나가
+        **평타 몫의 게이지도 안 찬다.** 스킬이 채우는 게이지(스킬 대미지 히트·게이지 충전
+        효과)는 그대로 찬다 — 그래서 충전 창 전체를 닫지 않고 무기 사격의 가산 자리에서만
+        거른다. 무기 변경 모드의 스킬 대미지 사격은 딜 게이트가 스킬로 보므로 여기서도
+        스킬로 둔다(족자에 안 막힌다).
+        """
+        if self._wc_is_skill_damage():
+            return True
+        frame_t = round(t, 9)
+        return not any(lo <= frame_t < hi for lo, hi in bm.state.get("gauge_weapon_blocked", ()))
+
+    def _burst_gain(self, buffs: dict, hit_count: float, full_charge: bool = False,
+                    burst_energy: float | None = None) -> float:
+        """이번 발사가 만드는 버스트 게이지(%). 충전 창 판정은 하지 않는다.
+
+        `full_charge`는 **풀차지 샷이면서 카메라가 이 니케를 보고 있을 때만** True다 —
+        판정은 부르는 쪽(`_charge_fire`)이 한다. 게이지 배율은 대미지 배율과 같은
+        `full_charge_mult`를 쓴다(CDN `버스트게이지(풀차지)/100`과 78/78 일치).
+
+        `burst_energy`를 주면 무기값 대신 그 값을 쓴다 — 무기값과 다른 버충 계수를 갖는
+        스킬 히트용이다(`data/burst_gauge.json` `_exceptions`, 라피 : 레드 후드 부착 대미지).
+
+        충전 속도 버프는 수령자와 무관하게 같은 시전자 기준식을 쓴다. 시전자의 기준값으로
+        환산된 히트당 고정 가산(`burst_charge_speed_flat`)이며, 현재 공격의 무기값·스킬값·
+        풀차지 배율은 이 가산항에 관여하지 않는다.
+        """
+        be = self.burst_energy if burst_energy is None else burst_energy
+        gain = be * hit_count
+        if full_charge:
+            gain *= self.weapon.get("full_charge_mult", 100.0) / 100.0
+        return gain + hit_count * buffs.get("burst_charge_speed_flat", 0.0)
 
     def _tick_charge(self, t: float, bm: BuffManager, enemy: dict, cfg: dict) -> list[HitEvent]:
         events = []
@@ -867,7 +978,10 @@ class CharState:
             # 톡톡이로 쏘다가 **본인 버스트 동안만** 풀차지를 들고 있는 조작이
             # 실제로 쓰인다(아인 + 에이다). 톡톡이가 늘 이기게 두면 홀드가 통째로
             # 죽어, 홀드를 얹은 조합이 톡톡이만 켠 것과 한 자리도 다르지 않았다.
-            if self.tap_fire and not self._force_full_charge and self._hold_release_t < 0:
+            bunny_switch = (bm.weapon_change_name(self.name) != "마이티 스톰프"
+                            and self.name in bm.state.get("bunny_modes", {})
+                            and bm.state["bunny_modes"][self.name] != self.bunny_mode)
+            if self._tap_active(bm) and not self._force_full_charge and self._hold_release_t < 0 and not bunny_switch:
                 # 톡톡이: 누르는 시간이 고정이고, 그중 사격 전 딜레이를 뺀 만큼만 차지된다.
                 # 차지속도 버프로 유효 차지 시간이 그 아래로 내려가면 풀차지 샷이 된다.
                 self._charge_end_t = self._charge_start_t + self._tap_hold
@@ -894,6 +1008,8 @@ class CharState:
                 if (self._charge_phase != _phase_before
                         or self.reloading_until != _reload_before):
                     return events
+                if (bunny_switch and bm.state["bunny_modes"][self.name] != self.bunny_mode):
+                    return events
                 # 홀드: 풀차지가 끝나도 시퀀스가 지정한 시각까지 떼지 않는다.
                 # 대기 중에도 charging=True라 "차지 중" 조건 버프가 유지된다 (실제 게임과 동일).
                 if self._hold_release_t >= 0 and t < self._hold_release_t:
@@ -918,12 +1034,52 @@ class CharState:
         """
         if self._charge_full_t < 0:
             return
+        # An ally can satisfy the requested mode earlier in this same frame.
+        # Release the held shot instead of toggling the whole pair back again.
+        if bm.state.get("bunny_modes", {}).get(self.name) == self.bunny_mode:
+            return
         held = t - self._charge_full_t
         for value, raw in bm.charge_hold_thresholds(self.name):
             if raw in self._charge_hold_fired or held < value:
                 continue
             self._charge_hold_fired.add(raw)
             bm.notify(f"charge_hold:{raw}", t, self.name)
+
+    def _pellet_probabilities(self, t, bm, enemy, buffs, core_probability, pellet_count=1):
+        if (self.accuracy_weapon or self.weapon_type) != "SG":
+            return 1.0, core_probability
+        spec = _ACCURACY_DATA.get(self.accuracy_weapon or self.weapon_type, {})
+        accuracy = max(buffs.get("accuracy_pct", 0), self.accuracy_floor_pct)
+        radius = max(1, spec.get("base_diameter", 10) - spec.get("acc_slope", 0) * accuracy) / 2
+        if enemy.get('shotgun_model') in ('spatial-v1', 'spatial-convergence-v1') and not self._in_weapon_change:
+            spread = self._spread_spec
+            start = float(spread.get('start', 250))
+            scale = start
+            if enemy.get('shotgun_model') == 'spatial-convergence-v1':
+                # Explicit experimental policy: contract after each shot,
+                # recover only during the reload gap. CDN does not document
+                # timing semantics; this policy is never silently enabled.
+                self._recover_spread(t)
+                scale = self._spread_scale
+                self._spread_scale = max(float(spread.get('end', start)), scale-float(spread.get('per_shot', 0)))
+            radius *= scale / 250
+        hit, core = pellet_probabilities(enemy, self.name, t, bm.state.get("full_burst", False),
+                                         radius, core_probability, _MODEL_N)
+        if enemy.get('shotgun_report'):
+            if self._shotgun_heatmap is None:
+                self._shotgun_heatmap = ShotgunHeatmap()
+            self._shotgun_heatmap.record(enemy, self.name, t, bm.state.get('full_burst', False),
+                                         radius, accuracy, pellet_count, hit, core, _MODEL_N)
+        if enemy.get('shotgun_model') in ('spatial-v1', 'spatial-convergence-v1'):
+            stats = self.shotgun_stats
+            for key, amount in {'fired': pellet_count, 'hit': pellet_count*hit,
+                                'core': pellet_count*hit*core, 'miss': pellet_count*(1-hit)}.items():
+                stats[key] = stats.get(key, 0) + amount
+            override = (enemy.get('shotgun_geometry') or {}).get('spread', {}).get(self.name)
+            diameter = override if override and override > 0 else radius*2
+            stats['minDiameter'] = min(stats.get('minDiameter', diameter), diameter)
+            stats['maxDiameter'] = max(stats.get('maxDiameter', diameter), diameter)
+        return hit, core
 
     def _charge_fire(
         self, t: float, bm: BuffManager, enemy: dict, cfg: dict, is_full: bool
@@ -975,7 +1131,18 @@ class CharState:
         is_full_burst = bm.state.get("full_burst", False)
         if in_debug_window:
             print(f"t={t:.3f}s  base_atk={self.base_atk:,}  enemy_def={enemy.get('def', 31784):,}")
+        P_hit, P_core = self._pellet_probabilities(t, bm, enemy, buffs, P_core, hit_count)
+        landed = 0
+        is_core = False
+        res = {"damage": 0, "crit_frac": 0, "is_crit": False}
+        shot_damage = 0
+        ht = None
+        tag = "normal"
         for _ in range(hit_count):
+            if P_hit <= 0 or (not expected and P_hit < 1 and random.random() >= P_hit):
+                continue
+            landed += 1
+            weight = P_hit if expected else 1.0
             # 코어는 펠릿마다 따로 굴린다 (P_core가 1이면 기대값 모드에서도 코어로 남긴다).
             is_core = (P_core >= 1.0) if expected else (random.random() < P_core)
             ht = default_hit_type(
@@ -1003,7 +1170,7 @@ class CharState:
             else:
                 # 논차지 샷은 일반 발사와 같은 취급 (차지 배율 없음)
                 tag = "core" if is_core else "normal"
-            shot_damage = _apply_hit_coeff(res["damage"], cfg, self.weapon_type,
+            shot_damage = _apply_hit_coeff((res["damage"] if weight == 1 else round(res["damage"] * weight)), cfg, self.weapon_type,
                                            self._wc_is_skill_damage())
             events.append(HitEvent(t=t, caster=self.name, damage=shot_damage,
                                    is_crit=res["is_crit"], hit_tag=tag,
@@ -1014,10 +1181,11 @@ class CharState:
                                       if self._wc_is_skill_damage() else {})))
         if in_debug_window:
             print()
-        events.extend(self._pierce_extra(
-            ht=ht, base_damage=shot_damage, is_crit=res["is_crit"], buffs=buffs,
-            enemy=enemy, cfg=cfg, expected=expected, t=t, tag=tag,
-        ))
+        if landed:
+            events.extend(self._pierce_extra(
+                ht=ht, base_damage=shot_damage, is_crit=res["is_crit"], buffs=buffs,
+                enemy=enemy, cfg=cfg, expected=expected, t=t, tag=tag, hit_weight=weight,
+            ))
         # 명중 직후 파생되는 "자신이 가한 피해량 비례 고정 대미지"의 기준값.
         # notify(full_charge_hit) 동안만 소비되며 방어력·공격 버프를 다시 적용하지 않는다.
         bm.state.setdefault("last_normal_hit_damage", {})[self.name] = res["damage"]
@@ -1033,21 +1201,37 @@ class CharState:
         if self._sim_log is not None:
             self._sim_log.ammo_log.append(AmmoLogEntry(t=t, caster=self.name, ammo=self.ammo))
         bm.notify("squad_ammo_consume", t, self.name)
-        bm.notify("hit_count", t, self.name)
+        attack_hit = (1 - (1 - P_hit) ** hit_count) if expected else float(landed > 0)
+        _notify_frac(bm, "hit_count", self.name, attack_hit,
+                     lambda: bm.notify("hit_count", t, self.name, core_frac=P_core if expected else float(is_core)))
         if is_full:
-            bm.notify("full_charge_hit", t, self.name)
+            _notify_frac(bm, "full_charge_hit", self.name, attack_hit, lambda: bm.notify("full_charge_hit", t, self.name))
         else:
-            bm.notify("non_full_charge_hit", t, self.name)
+            _notify_frac(bm, "non_full_charge_hit", self.name, attack_hit, lambda: bm.notify("non_full_charge_hit", t, self.name))
+        # 일반 공격 명중이면 충전 창·풀차지와 무관하게 시전자 기준값을 갱신한다.
+        _gauge_hits = hit_count * P_hit if expected else float(landed)
+        if _gauge_hits > 0 and not self._wc_is_skill_damage():
+            bm.mark_normal_attack_landed(self.name)
+        # 버스트 게이지. **풀차지 배율은 카메라가 이 니케를 보고 있을 때만 붙는다** —
+        # 2024-04-25 "SR, RL 니케를 바라보고 있을 경우 차지 시간에 따라 버스트 게이지를
+        # 추가로 획득"이 이것이다. 루주 1인 스쿼드 실측이 카메라 有 7발 / 無 18발로 갈린다.
+        if _gauge_hits > 0 and self._weapon_gauge_lands(bm, t):
+            gauge_buffs = bm.get_buffs(self.name, "__enemy__", t)
+            bm.add_burst_gauge(
+                self._burst_gain(gauge_buffs, _gauge_hits,
+                                 full_charge=(is_full and self.name in bm.state.get("camera", ()))),
+                t, self.name,
+                "weapon:full_charge" if is_full else "weapon")
         body_ev = "squad_part_hit" if enemy.get("has_parts", False) else "squad_body_hit"
         core_frac = P_core if expected else (1.0 if is_core else 0.0)
-        _notify_frac(bm, body_ev, self.name, 1.0 - core_frac,
+        _notify_frac(bm, body_ev, self.name, attack_hit * (1.0 - core_frac),
                      lambda: bm.notify_team_hit(body_ev, t, self.name))
         bm.notify("on_attack", t, self.name)
         if not self._wc_is_skill_damage():
             bm.consume_bullet_buffs(self.name, t)
-        _notify_frac(bm, "crit_hit", self.name, res["crit_frac"],
+        _notify_frac(bm, "crit_hit", self.name, attack_hit * res["crit_frac"],
                      lambda: bm.notify("crit_hit", t, self.name))
-        _notify_frac(bm, "core_hit", self.name, core_frac,
+        _notify_frac(bm, "core_hit", self.name, attack_hit * core_frac,
                      lambda: bm.notify("core_hit", t, self.name))
         if is_last:
             bm.notify("last_bullet", t, self.name)
@@ -1055,7 +1239,7 @@ class CharState:
         # 톡톡이는 **사격 후 딜레이를 줄이는 컨트롤이다** — 풀차지로 나갔든 아니든
         # 떼기 + 덜 지운 사격 후 딜레이만 기다린다. 그래서 차지속도 버프로 차지가 짧아진
         # 구간에서는 풀차지 샷을 초당 3~4발 낼 수 있다.
-        if self.tap_fire:
+        if self._tap_active(bm):
             self._post_delay_end_t = t + self._tap_release + self._tap_post
         else:
             self._post_delay_end_t = t + self.post_fire_delay
@@ -1160,14 +1344,16 @@ class CharState:
         wc_fire_rate_max = _pick("fire_rate_max", wc_over, wc_eff, wc_mech)
         wc_warmup_bullets = float(_pick("warmup_bullets", wc_over, wc_eff, wc_mech, default=1.0))
         wc_pellets = int(_pick("pellets", wc_over, wc_eff, wc_mech, default=1))
+        # 변경 무기의 히트당 버스트 게이지. 캐릭터 레코드가 없으니 무기군 기본값이 마지막이다.
+        wc_burst_energy = float(_pick("burst_energy", wc_over, wc_eff, wc_mech, default=0.0))
         wc_muzzles = int(_pick("muzzles", wc_over, wc_eff, default=1))
         # 발사 후 딜레이도 실측 계층(`weapon_delays._weapon_change`)이 먼저다 —
         # 이 파일이 애초에 딜레이 실측을 모아 두는 곳인데 여기만 안 닿고 있었다.
         wc_post_fire_delay = _pick("post_fire_delay", wc_over, wc_eff,
                                    default=wc_mech.get("post_fire_delay", 0.0))
         # 모드의 명중률 하한. 무기군 기본 탄착군이 실제와 다른 모드가 있어 실측을 얹는다
-        # (`weapon_delays._weapon_change`). 없으면 0이라 종전과 같다.
-        wc_accuracy_floor = float(_pick("accuracy_pct", wc_over, wc_eff, default=0.0))
+        # (`weapon_delays._weapon_change`). 지정하지 않으면 음수 명중률도 그대로 반영한다.
+        wc_accuracy_floor = float(_pick("accuracy_pct", wc_over, wc_eff, default=float('-inf')))
         # 탄착군을 잴 무기군. 안 주면 모드 무기로 잰다(종전과 같다).
         wc_accuracy_weapon = str(_pick("accuracy_weapon", wc_over, wc_eff, default="") or "")
 
@@ -1185,6 +1371,13 @@ class CharState:
 
         # 발사 전 charge_phase가 ready인 경우 ammo를 weapon_change 장탄으로 세팅
         # (이미 charging 중이거나 post_delay 중이면 그대로 진행)
+        if self._wc_new_session and (wc_eff.get("fixed_bullets") or wc_eff.get("fresh_charge")):
+            # An explicitly fresh replacement starts a new charge, even if the old SR
+            # was in post-delay or had already latched a full charge for a mode switch.
+            self._charge_phase = "ready"
+            self._charge_full_t = -1.0
+            self._hold_release_t = -1.0
+            self._pending_auto_reload = False
         was_ready = (self._charge_phase == "ready")
 
         # CharState 필드 임시 교체
@@ -1194,6 +1387,7 @@ class CharState:
         orig_fire_mode         = self.fire_mode
         orig_pellets           = self.pellets
         orig_muzzles           = self.muzzles
+        orig_burst_energy      = self.burst_energy
         orig_fire_rate         = self.fire_rate
         orig_fire_rate_max     = self.fire_rate_max
         orig_warmup_bullets    = self.warmup_bullets
@@ -1210,6 +1404,7 @@ class CharState:
         self.fire_mode           = wc_fire_mode
         self.pellets             = wc_pellets
         self.muzzles             = wc_muzzles
+        self.burst_energy        = wc_burst_energy
         self.fire_rate           = wc_fire_rate
         self.fire_rate_max       = wc_fire_rate_max
         self.warmup_bullets      = wc_warmup_bullets
@@ -1253,6 +1448,10 @@ class CharState:
             self.next_fire_time = t
             orig_ammo = None
             self._wc_ammo_borrowed = True
+        if self._wc_new_session and wc_eff.get("refill_on_exit"):
+            self.reloading_until = -1.0
+            self._reload_in_weapon_change = False
+            self._post_reload_end_t = -1.0
         self._wc_new_session = False
 
         # 발수 카운트는 _fire()/_tick_charge()가 self._wc_shots에 직접 누적한다
@@ -1261,6 +1460,16 @@ class CharState:
         else:
             events = self._tick_charge(t, bm, enemy, cfg)
 
+        if events and wc_eff.get("continuous_charge"):
+            # Begin the next charge at the previous scheduled endpoint, avoiding a
+            # post-delay frame and cumulative frame rounding over ten half-second shots.
+            # Floating-point tolerance keeps an exact boundary shot on its frame.
+            self._charge_start_t = self._charge_end_t - 1e-10
+            self._charge_phase = "charging"
+            self._charge_full_t = -1.0
+            self._charge_hold_fired.clear()
+            bm.state.setdefault("charging", {})[self.name] = True
+
         # 원복
         self.weapon              = orig_weapon
         self.weapon_type         = orig_weapon_type
@@ -1268,6 +1477,7 @@ class CharState:
         self.fire_mode           = orig_fire_mode
         self.pellets             = orig_pellets
         self.muzzles             = orig_muzzles
+        self.burst_energy        = orig_burst_energy
         self.fire_rate           = orig_fire_rate
         self.fire_rate_max       = orig_fire_rate_max
         self.warmup_bullets      = orig_warmup_bullets
@@ -1286,18 +1496,22 @@ class CharState:
             duration_bullets = int(duration_bullets)
             if gauge_ref:
                 duration_bullets = wc_ammo_full
-            elif wc_max_ammo != -1 and duration_bullets == wc_max_ammo:
+            elif (not wc_eff.get("fixed_bullets") and wc_max_ammo != -1
+                  and duration_bullets == wc_max_ammo):
                 # "모든 탄환 발사 시 제거" 형태 — 장탄 버프로 장탄이 늘면 발수도 함께 늘어난다
                 duration_bullets = wc_ammo_full
         if duration_bullets is not None and self._wc_shots >= duration_bullets:
             # 원래 무기로 돌아오면 charge_phase를 ready로 초기화
-            self._charge_phase = "ready"
+            if not wc_eff.get("refill_on_exit"):
+                self._charge_phase = "ready"
             if wc_fire_mode in ("auto", "auto_warmup"):
                 # 마지막 발과 같은 tick에 잡힌 변경 무기 재장전 예약은 무효
                 # (변경 무기는 재장전하지 않는다 — 장탄 소진이 곧 모드 종료)
                 self.reloading_until = -1.0
                 self.next_fire_time = t
             self.ammo = orig_ammo if orig_ammo is not None else self.weapon["max_ammo"]
+            if wc_eff.get("refill_on_exit"):
+                self._restore_special_magazine(t, bm)
             self._wc_ammo_borrowed = False   # 여기서 이미 원복했다 (tick의 만료 처리와 중복 금지)
             self._wc_dynamic_ammo = None
             # 장탄 원복이 끝난 뒤에 종료 이벤트를 쏜다 — event:state_end로 발동하는
@@ -1305,6 +1519,24 @@ class CharState:
             bm.end_weapon_change(self.name, t)
 
         return events
+
+    def _restore_special_magazine(self, t: float, bm: BuffManager):
+        """Replacement completion is an ammo refill, not a reload event."""
+        self.ammo = self._full_ammo(bm, t, original_weapon=True)
+        self._recover_spread(t)
+        self.reloading_until = -1.0
+        self._reload_in_weapon_change = False
+        self._pending_auto_reload = False
+        self._post_reload_end_t = -1.0
+        # 탄창 복구는 마지막 사격이 예약한 후딜을 취소하지 않는다.
+        if self._charge_phase != "post_delay" or self._post_delay_end_t <= t:
+            self._charge_phase = "ready"
+        self._charge_full_t = -1.0
+        self._hold_release_t = -1.0
+        self._wc_refill_on_exit = False
+        bm.state.setdefault("charging", {})[self.name] = False
+        if self._sim_log is not None:
+            self._sim_log.ammo_log.append(AmmoLogEntry(t=t, caster=self.name, ammo=self.ammo))
 
     def _fixed_charge_time(self, bm: BuffManager) -> float:
         """charge_time_fixed 버프의 fixed_value(초). 복수이면 가장 나중에 부여된 값.
@@ -1455,7 +1687,29 @@ class CharState:
         # 모드 탄창 로직을 흔들지 않도록 weapon_change 중에는 걸지 않는다
         if self._in_weapon_change or bm.get_weapon_change(self.name) is not None:
             return False
-        return self._apply_burst_cover(t, bm) or self._apply_reload_cover(t, bm)
+        return (self._apply_burst_cover(t, bm) or self._apply_reload_cover(t, bm)
+                or self._apply_tap_reload(t, bm))
+
+    def _apply_tap_reload(self, t: float, bm: BuffManager) -> bool:
+        """버충 톡톡이의 재장전 — 풀버스트가 끝나는 순간 엄폐해 탄창을 채우고 곧바로 톡톡이로.
+
+        톡톡이는 탄을 3~5배 빨리 비우므로 버충 구간을 꽉 찬 탄창으로 시작해야 한다. 재장전은
+        엄폐로 유도되는 결과라(§장전컨) 여기서도 엄폐 구간을 열 뿐이다. 사이클당 1회 —
+        `full_burst_end_t`는 진입 때 확정되고 끝난 뒤에도 남아 있어 그것을 닻으로 쓴다.
+        """
+        if not (self.tap_fire and self.tap_policy == "burst_charge" and self.tap_reload_at_end):
+            return False
+        if self.fire_mode != "charge" or bm.state.get("full_burst", False):
+            return False
+        anchor = bm.state.get("full_burst_end_t", -1.0)
+        if anchor <= 0 or t < anchor or anchor == self._tap_reload_anchor:
+            return False
+        self._tap_reload_anchor = anchor
+        # 이미 재장전 중이거나 탄이 꽉 찼으면 엄폐할 일이 없다 — 곧바로 톡톡이다.
+        if self.reloading_until > 0 or self.ammo >= self._full_ammo(bm, t):
+            return False
+        self._enter_cover(t, bm, None, "엄폐 시작(버충 톡톡이 재장전)")
+        return True
 
     def _apply_hold_policy(self, t: float, bm: BuffManager) -> None:
         """홀드컨 — 본인 버스트 사이클의 풀버스트 동안 풀차지를 들고 있는다.
@@ -1470,6 +1724,8 @@ class CharState:
         """
         if self.fire_mode != "charge":
             return
+        if self.name in bm.state.get("bunny_modes", {}):
+            return  # Explicit bunny mode control owns the hold; avoid conflicting toggles.
         if self.hold_policy not in ("own_full_burst", "charge_hold_after_fb"):
             return
         if not bm.state.get("full_burst", False):
@@ -1649,12 +1905,19 @@ class CharState:
         clips = math.ceil(max(0, full - self.ammo) / self._clip_gain(full))
         return one * max(1, clips)
 
+    def _recover_spread(self, t):
+        if self._spread_reload_at is not None:
+            self._spread_scale = min(float(self._spread_spec.get('start', 250)), self._spread_scale + max(0, t-self._spread_reload_at) * float(self._spread_spec.get('recovery', 0)))
+            self._spread_reload_at = None
+
     def _start_reload(self, t: float, bm: BuffManager, label: str = "재장전 시작",
                       from_empty: bool = False):
         # 탄을 비워 자동으로 걸린 재장전만 시작 지연을 얹는다. 지연 동안은 쏘지도
         # 장전하지도 않으므로 장전 완료 시각을 그만큼 미루는 것으로 같아진다.
         lead = (self.reload_start_delay * self._reload_speed_factor(bm, t)) if from_empty else 0.0
         self.reloading_until = t + lead + self._reload_duration(bm, t)
+        self._recover_spread(t)
+        self._spread_reload_at = t
         self._reload_in_weapon_change = bm.get_weapon_change(self.name) is not None
         # 차지 중에 재장전이 걸리면 차지는 무효다. 재장전 후에는 처음부터 다시 차지한다
         # (초기화하지 않으면 남아 있던 _charge_start_t로 재장전 직후 즉시 발사된다).
@@ -1677,13 +1940,14 @@ class CharState:
         - 장탄을 채우지 않는다. 이미 탄환 충전이 채운 값이 정답이다.
         재장전 완료 후 딜레이(`post_reload_delay`)도 걸지 않는다. 완료 모션이 없기 때문이다.
         """
+        self._recover_spread(t)
         self.reloading_until = -1.0
         self._reload_in_weapon_change = False
         if self._sim_log is not None:
             self._sim_log.reload_log.append(
                 ReloadLogEntry(t=t, caster=self.name, event="재장전 취소(탄충)"))
 
-    def _full_ammo(self, bm: BuffManager, t: float) -> int:
+    def _full_ammo(self, bm: BuffManager, t: float, *, original_weapon: bool = False) -> int:
         # 무기 변경 모드 중이면 그 모드의 장탄으로 채운다. 다만 스킬 원문에
         # `(사용 무기 변경 시 최대 장탄 수 효과 갱신)`이 붙은 모드는 **표기 장탄을 밑값으로
         # 삼아 장탄 버프를 그 위에 얹는다**(`max_ammo_buff_applies`, GAMEPLAY.md §무기 메카닉).
@@ -1692,7 +1956,7 @@ class CharState:
         # 멈췄다 — 「모든 탄환 발사 = 모드 종료」라 그 발수가 곧 딜인 캐릭터다.
         base = self.weapon["max_ammo"]
         wc_eff = bm.get_weapon_change(self.name)
-        if wc_eff is not None:
+        if wc_eff is not None and not original_weapon:
             wc_max = wc_eff.get("max_ammo", -1)
             if wc_max != -1:
                 if not wc_eff.get("max_ammo_buff_applies"):
@@ -1729,6 +1993,7 @@ class CharState:
                 return
         else:
             self.ammo = full
+        self._recover_spread(t)
         self.reloading_until = -1.0
         self._reload_in_weapon_change = False
         bm.notify("event:full_reload", t, self.name)
@@ -1852,13 +2117,21 @@ class BurstController:
             c["name"]: _first_burst_t for c in squad
         }
 
+        # 게이지 사이클 판정 방식 — "fixed"(종전 고정 시간) / "accumulate"(실누적).
+        # 두 모델이 갈리는 곳은 `_gauge_ready()` 한 곳뿐이다. 게이지 자체는 두 모드
+        # 모두에서 똑같이 계산되고 로그에 남으므로 나란히 비교할 수 있다.
+        self._gauge_mode: str = config.get("burst_gauge_mode", "fixed")
+
         # 버스트 진행 상태
         # "idle" / "stage:N" / "reenter:N" / "switching" / "full_burst"
         self._phase: str = "idle"
         self._next_action_t: float = math.inf
         self._full_burst_end_t: float = -1.0
-        # 직전 풀버스트 시작 시각 (장전컨 정책 B의 사이클 주기 관측용)
+        # 다음 풀버스트 시작 예측 — **직전 사이클 주기 관측이 정답에 가장 가깝다.**
+        # 관측치가 없는 첫 사이클에만 쿨타임 사슬로 메운다(`_predict_next_fb_start()`).
         self._last_fb_start_t: float = -1.0
+        self._obs_next_fb: float = -1.0
+        self._cd_next_fb: float = -1.0    # 관측이 없는 동안 쓰는 쿨타임 기반 예측
 
         # 쿨타임 대기 중인 단계의 후보 목록 (대기가 아니면 None).
         # _next_action_t는 두 가지가 섞여 있다 — 의도된 딜레이(단계 전환 0.1s,
@@ -1917,11 +2190,27 @@ class BurstController:
                 regen = self.char_states[name].char.get("burst_regen_time", 2.0)
                 self.gauge_full_at[name] = charge_end(t, regen, self._gauge_blocked)
             self._burst_count += 1
+            # 관측이 아직 없는 사이클(= 첫 사이클)의 예측을 **여기서 한 번만** 낸다.
+            #   ① 값이 사이클 내내 고정이어야 한다. 매 틱 다시 내면 정책의 앵커가 계속
+            #      바뀌어 「사이클당 1회」 가드가 무력화되고 같은 엄폐가 연달아 열린다.
+            #   ② 첫 풀버스트 **전에는** 낼 수 없다. 그 구간을 정하는 건 쿨타임이 아니라
+            #      게이지인데(전원 쿨이 0이다) 사슬은 게이지를 안 본다.
+            if self._obs_next_fb <= 0.0:
+                self._cd_next_fb = self._predict_next_fb_start(t)
 
         # ── idle → 게이지 충전 완료 시 1단계 진입 ─────────────────────────
         _at_max = (self._max_burst_count is not None and self._burst_count >= self._max_burst_count)
         if self._phase == "idle" and not _at_max:
-            if all(t >= self.gauge_full_at[n] - 1e-9 for n in self.squad_names):
+            if self._gauge_ready(t, state):
+                # 버스트 흐름 로그에는 **"accumulate"에서만** 적는다. "fixed"에서는
+                # 게이지가 사이클을 판정하지 않아 이 줄이 오해를 부르고, 종전 baseline이
+                # 한 줄도 움직이면 안 된다. 게이지 내역 자체는 두 모드 모두 gauge_log에 남는다.
+                if self._log is not None and self._gauge_mode == "accumulate":
+                    self._log.burst_log.append(BurstLogEntry(
+                        t=t, event=f"게이지 만충 {state.get('burst_gauge', 0.0):.1f}% → 1단계 진입 (소모)",
+                        caster=""))
+                # 1단계 진입이 게이지를 소모한다(두 모드 모두 — 로그에 남는다).
+                bm.consume_burst_gauge(t)
                 self._phase = "stage:1"
                 self._next_action_t = t + self._burst_reaction
                 for n in self.squad_names:
@@ -2018,7 +2307,7 @@ class BurstController:
             # 시작 시각은 반응형(게이지·쿨)이라 확정할 수 없어 직전 주기로 예측한다.
             state["full_burst_end_t"] = self._full_burst_end_t
             if self._last_fb_start_t >= 0.0:
-                state["next_fb_start_pred"] = t + (t - self._last_fb_start_t)
+                self._obs_next_fb = t + (t - self._last_fb_start_t)
             self._last_fb_start_t = t
             bm._invalidate_buffs_cache()
             for n in self.squad_names:
@@ -2039,7 +2328,8 @@ class BurstController:
             # 버스트 스킬 대미지: full_burst_start 버프 적용 후 계산
             events.extend(self._fire_pending_burst_dmg(t, bm))
             if self._log is not None:
-                self._log.burst_log.append(BurstLogEntry(t=t, event="full_burst 시작", caster=""))
+                self._log.burst_log.append(BurstLogEntry(
+                    t=t, event="full_burst 시작", caster="", planned_end=self._full_burst_end_t))
                 snap = BuffSnapshot(t=t, buffs_by_char={})
                 for n in self.squad_names:
                     entries = []
@@ -2058,7 +2348,91 @@ class BurstController:
                     snap.buffs_by_char[n] = entries
                 self._log.buff_snapshots.append(snap)
 
+        # ── 충전 창 공개 ──────────────────────────────────────────────────
+        # 게이지는 **풀버스트가 끝나기 전까지는 충전되지 않는다**(유저 인게임 확인). 그 조건이
+        # `_phase == "idle"`과 같다 — 1단계 진입부터 풀버스트 종료까지는 안 찬다.
+        # `BuffManager.add_burst_gauge()`가 이 값 하나로 충전 여부를 판정한다. 이 tick()은
+        # 캐릭터 tick보다 먼저 돌아 프레임 t에 쏜 몫은 t+1의 게이트에서 판정된다(1프레임 지연).
+        state["burst_gauge_charging"] = (self._phase == "idle")
+
+        # ── 다음 풀버스트 시작 예측 ────────────────────────────────────────
+        # **관측이 있으면 관측이 이긴다.** 직전 사이클 주기 외삽이 쿨타임 사슬보다 정확하다 —
+        # 사슬은 앞으로 들어올 쿨감(`burst_cooldown_reduce`)을 못 보기 때문이다.
+        # 관측이 없는 동안(첫 사이클)만 사슬 값을 쓰고, 그 값은 풀버스트 종료 때 한 번 잡힌다.
+        state["next_fb_start_pred"] = (
+            self._obs_next_fb if self._obs_next_fb > 0.0 else self._cd_next_fb)
+
         return events
+
+    def _predict_next_fb_start(self, t: float) -> float:
+        """다음 풀버스트가 시작할 시각. 없으면 `-1.0`. 정본: context/CONTROL.md §다음 풀버스트 예측.
+
+        **남은 버스트 쿨타임으로 단계 사슬(1→2→3)을 앞으로 굴린다.** 종전에는 직전 사이클
+        주기 관측 외삽뿐이라 관측치가 없는 **첫 사이클에는 값이 아예 없었고**(정책 B가 안
+        걸렸다), 쿨타임은 확정값이라(`burst_ready_at` — 쿨감까지 반영된 미래 시각) 그 구멍을
+        메운다. (원본 저장소 이식, 2026-09-22)
+
+            열림₁ = max(기준, 게이지 준비)          기준 = 풀버스트 중이면 그 종료, 아니면 지금
+            누름ₖ = min over 후보 n ( max(열림ₖ, 쿨 해제[n]) ) + 반응속도
+            열림ₖ₊₁ = 누름ₖ + burst_switch_delay
+            예측 = 누름₃ + 0.05                     (switching → 풀버스트 진입 딜레이)
+
+        `fixed`에서는 게이지 제약이 `풀버스트 종료 + burst_regen_time`이라 확정값이므로 사슬에
+        넣지만, `accumulate`에서는 실누적이라 확정값이 없어 뺀다 — 그쪽이 병목인 조합에서는
+        **예측이 이르게 나온다.** 하한이라는 뜻이다.
+        """
+        in_fb = self._phase == "full_burst"
+        if (self._max_burst_count is not None
+                and self._burst_count + (1 if in_fb else 0) >= self._max_burst_count):
+            return -1.0
+
+        base = self._full_burst_end_t if in_fb else t
+        if self._gauge_mode != "accumulate":
+            if in_fb:
+                base = charge_end(base, max(self.char_states[n].char.get("burst_regen_time", 2.0)
+                                            for n in self.squad_names), self._gauge_blocked)
+            else:
+                base = max(base, max(self.gauge_full_at.values()))
+
+        cycle_idx = self._burst_count + (1 if in_fb else 0)
+        first = 1
+        if self._phase.startswith(("stage:", "reenter:")):
+            first = int(self._phase.split(":")[1])
+            base = max(t, self._next_action_t if self._next_action_t < math.inf else t)
+        elif self._phase == "switching":
+            return max(t, self._next_action_t) + 0.05
+
+        at = base + self._burst_reaction
+        for stage in (str(i) for i in range(first, 4)):
+            cands = self._predict_candidates(stage, cycle_idx)
+            if not cands:
+                return -1.0   # 그 단계를 쓸 사람이 없다 — 사이클이 영영 안 돈다
+            at = min(max(at, self.burst_ready_at.get(n, 0.0)) for n in cands)
+            if stage != "3":
+                at += self.config.get("burst_switch_delay", 0.1) + self._burst_reaction
+        return at + 0.05
+
+    def _predict_candidates(self, stage: str, cycle_idx: int) -> list[str]:
+        """예측용 단계 후보. `_try_use_stage()`가 쓰는 것과 같은 출처.
+
+        패턴(`_pattern_rank`)은 보지 않는다 — 패턴은 후보를 **빼는 게 아니라 뒤로 미는**
+        것이라, "이 단계가 언제 넘어갈 수 있나"의 답은 후보 전체의 최솟값 그대로다.
+        """
+        if (self._burst_sequence is not None
+                and cycle_idx < len(self._burst_sequence)):
+            return self._burst_sequence[cycle_idx].get(stage, [])
+        return self.burst_order.get(stage, [])
+
+    def _gauge_ready(self, t: float, state: dict) -> bool:
+        """1단계에 진입할 수 있는가. **두 모델이 갈리는 유일한 지점이다.**
+
+        - "accumulate" — 실누적 게이지가 100%에 닿았는가. `first_burst_time`은 보지 않는다.
+          전투 시작 시점도 `idle`이라 0에서 그대로 차오른다. 버충 핵은 언제나 준비다.
+        - "fixed"      — 종전대로 `gauge_full_at`(시각)에 닿았는가.
+        """
+        if self._gauge_mode == "accumulate":
+            return self.cheats.burst_charge or state.get("burst_gauge", 0.0) >= 100.0 - 1e-9
+        return all(t >= self.gauge_full_at[n] - 1e-9 for n in self.squad_names)
 
     def _pattern_rank(self, name: str, cycle: int, t: float) -> int:
         """이번 사이클의 우선순위 등급. 낮을수록 먼저 쓴다 (`sorted`는 안정 정렬이라
@@ -2360,6 +2734,15 @@ def _register_instant_handlers(bm, char_states: dict[str, "CharState"], burst_ct
                 cs._sim_log.ammo_log.append(AmmoLogEntry(t=t, caster=name, ammo=cs.ammo))
             _cancel_reload_if_full(cs, t, max_ammo)
 
+    def handle_burst_charge_pct(eff, caster, t, val):
+        # 「버스트 게이지 충전 N%」. 스킬 텍스트 값을 **그대로** 가산한다 —
+        # 히트당 값이 아니라 이미 게이지 %라서 히트 수를 곱하지 않는다.
+        # **target: all_allies여도 1회만 더한다.** 게이지가 스쿼드 공용 1개이기 때문이다.
+        # 헬름 `진두지휘 3` 14.31이 아레나 코드에서도 풀차지 샷당 1회 가산인 것이 근거다.
+        if not _resolve_targets(eff, caster):
+            return
+        bm.add_burst_gauge(val, t, caster, f"charge_pct:{eff.get('name', '')}")
+
     def handle_burst_cooldown_reduce(eff, caster, t, val):
         target_names = _resolve_targets(eff, caster)
         for name in target_names:
@@ -2415,6 +2798,7 @@ def _register_instant_handlers(bm, char_states: dict[str, "CharState"], burst_ct
     bm.register_instant_handler("ammo_charge_pct", handle_ammo_charge_pct)
     bm.register_instant_handler("ammo_charge_flat", handle_ammo_charge_flat)
     bm.register_instant_handler("burst_cooldown_reduce", handle_burst_cooldown_reduce)
+    bm.register_instant_handler("burst_charge_pct", handle_burst_charge_pct)
     bm.register_instant_handler("heal_hp_pct", handle_heal_hp_pct)
     bm.register_instant_handler("current_hp_reduce", handle_current_hp_reduce)
     bm.register_instant_handler("cover_heal_pct", handle_cover_heal_pct)
@@ -2451,6 +2835,70 @@ def _check_names(names: list[str], allow_unparsed: bool) -> None:
         )
 
 
+def _is_charge_nikke(name: str) -> bool:
+    """풀차지 게이지 배율을 받을 수 있는 니케인가 (SR·RL). 카메라 유도 판정용."""
+    return _pick("full_charge_mult",
+                 _DELAYS["_exceptions"].get(name), _NIKKE.get(name)) is not None
+
+
+def _burst_charge_carriers(squad: list[dict]) -> list[str]:
+    """버충 톡톡이(`tap_fire.policy = "burst_charge"`)를 켠 니케들."""
+    out = []
+    for c in squad:
+        tap = (c.get("control") or {}).get("tap_fire") or {}
+        if tap and tap.get("policy") == "burst_charge":
+            out.append(c["name"])
+    return out
+
+
+def _resolve_cameras(squad: list[dict], cfg: dict) -> frozenset[str]:
+    """카메라를 받은 니케 집합. 풀차지 게이지 배율이 붙는 대상이다.
+
+    **버충 담당이 있으면 그 사람 하나로 끝난다 — `camera_mode`를 보지 않는다.**
+    충전 창은 몇 초뿐이고 그 안에서 한 명을 계속 클릭하는 조작이라 나눠 가질 수 없다.
+    두 명 이상이면 즉시 실패한다(조용히 틀리지 않는다).
+
+    버충 담당이 없을 때만 `camera_mode`가 갈린다:
+    - `"single"`(기본) — 정확히 1명. `config["camera"]`가 명시되면 그것이 이긴다(빈 문자열은
+      아무도 안 봄). 미지정이면 컨트롤을 켠 캐릭터가 **정확히 1명이고 차지 무기**일 때 그
+      사람, 그 외에는 **3번 자리**(전투 시작 카메라 위치).
+    - `"shared"` — 컨트롤을 켠 전원(없으면 3번 자리). 비현실적 상한이다.
+
+    효과는 `_charge_fire()`의 풀차지 게이지 배율 한 줄뿐이다.
+    """
+    mode = cfg.get("camera_mode", "single")
+    if mode not in ("single", "shared"):
+        raise ValueError(
+            f'camera_mode는 "single" 또는 "shared"여야 한다: {mode!r}. context/CONTROL.md §카메라')
+
+    carriers = _burst_charge_carriers(squad)
+    if len(carriers) > 1:
+        raise ValueError(
+            f"버충 톡톡이는 한 명만 켤 수 있다 (카메라를 나눠 가질 수 없다): {carriers}. "
+            f"context/CONTROL.md §톡톡이")
+    if carriers:
+        return frozenset(carriers)
+
+    named = cfg.get("camera")
+    if named is not None:
+        names = [named] if isinstance(named, str) else list(named)
+        names = [n for n in names if n]
+        if mode == "single" and len(names) > 1:
+            raise ValueError(
+                f'camera_mode="single"에는 카메라를 한 명만 줄 수 있다: {names}. '
+                f'여러 명을 보려면 camera_mode="shared". context/CONTROL.md §카메라')
+        return frozenset(names)
+
+    controlled = [c["name"] for c in squad if c.get("control")]
+    if mode == "shared" and controlled:
+        return frozenset(controlled)
+    if len(controlled) == 1 and _is_charge_nikke(controlled[0]):
+        return frozenset(controlled)
+    if len(squad) >= 3:
+        return frozenset({squad[2]["name"]})
+    return frozenset({squad[0]["name"]}) if squad else frozenset()
+
+
 def simulate(
     squad: list[dict],
     config: dict | None = None,
@@ -2482,6 +2930,29 @@ def simulate(
 
     cfg = {**DEFAULT_CONFIG, **(config or {})}
     enm = {**DEFAULT_ENEMY, **(enemy or {})}
+    core_px = enm["core_px"]
+    core_windows = [(float(a), float(b)) for a, b in enm.get("core_windows") or []]
+    optimal_range_weapons = enm["optimal_range_weapons"]
+    optimal_range_windows = normalize_optimal_range_windows(enm.get("optimal_range_windows"))
+
+    def _update_optimal_range(t: float):
+        frame_t = round(t, 9)
+        active = [w for w in optimal_range_windows if w["from"] <= frame_t < w["to"]]
+        enm["optimal_range_weapons"] = (
+            {weapon for w in active for weapon in w["weapons"]}
+            if active else optimal_range_weapons
+        )
+
+    _update_optimal_range(0.0)
+
+    def _update_core_exposure(t: float):
+        # DT 누적으로 30초가 29.999999999…가 되어 경계가 한 프레임 밀리지 않게 한다.
+        frame_t = round(t, 9)
+        enm["core_px"] = core_px if not core_windows or any(
+            lo <= frame_t < hi for lo, hi in core_windows
+        ) else 0
+
+    _update_core_exposure(0.0)
     duration = cfg["duration"]
 
     if cfg["rng_mode"] not in ("random", "expected"):
@@ -2489,6 +2960,11 @@ def simulate(
 
     squad = [{**DEFAULT_CHAR, **c} for c in squad]
     _check_names([c["name"] for c in squad], bool(cfg["allow_unparsed"]))
+
+    if cfg["burst_gauge_mode"] not in ("fixed", "accumulate"):
+        raise ValueError(
+            f'burst_gauge_mode는 "fixed" 또는 "accumulate"여야 한다: {cfg["burst_gauge_mode"]!r}')
+    cfg["_camera"] = _resolve_cameras(squad, cfg)
 
     base_stats: dict[str, dict] = {c["name"]: calc_base_stats(c) for c in squad}
 
@@ -2510,6 +2986,20 @@ def simulate(
         "gauges":       {c["name"]: {} for c in squad},
         "burst_stages": {c["name"]: _NIKKE[c["name"]]["burst_stage"] for c in squad},
         "enemy":        enm,
+        # 버스트 게이지 — **스쿼드 공용 1개**다. 만충 100, 초과분은 버려진다.
+        # 가산은 BuffManager.add_burst_gauge() 한 곳으로만 들어온다.
+        "burst_gauge":  0.0,
+        # 일반 공격을 1회라도 명중시킨 니케들. 이 니케가 건 버충속은 CDN `(발당)` 대신
+        # `(대상)` 게이지를 참조한다.
+        "normal_attack_landed": set(),
+        # 지금이 충전 창인가. BurstController.tick()이 매 프레임 `_phase == "idle"`로 갱신한다.
+        "burst_gauge_charging": True,
+        # 족자 구간 — 무기 사격 몫의 게이지가 안 차는 창(`CharState._weapon_gauge_lands`).
+        "gauge_weapon_blocked": (
+            [(float(a), float(b)) for a, b in (enm.get("immune_windows") or [])]
+            if cfg.get("immune_blocks_burst") else []),
+        # 카메라가 보고 있는 니케 집합(`_resolve_cameras()`). 풀차지 게이지 배율이 여기에만 붙는다.
+        "camera":       cfg["_camera"],
     }
 
     enemy_code = enm.get("code", "")
@@ -2692,6 +3182,12 @@ def simulate(
         buffs = bm.get_buffs(caster, "__enemy__", t)
         buffs["is_element_match"] = cs.element_match(bm)
         damage_base_atk = cs.base_atk
+        # 최대 체력의 일부를 기존 최종 공격력에 합산한다. atk_flat에 더해야
+        # 공격력% 버프가 체력 환산분에 다시 곱해지지 않는다.
+        if eff.get("scaling") == "max_hp_additive":
+            hp_pct = float(eff.get("scaling_hp_pct", 0.0))
+            buffs = {**buffs, "atk_flat": buffs.get("atk_flat", 0.0)
+                     + bm.effective_max_hp(caster) * hp_pct / 100.0}
         # 킬로처럼 "최종 최대 체력 N%를 공격력으로 환산"하는 스킬은 캐릭터의
         # 공격력과 공격력 버프를 전혀 쓰지 않는다. 환산값 자체가 이 1회의 공격력이다.
         if eff.get("scaling") == "max_hp_conversion":
@@ -2790,6 +3286,17 @@ def simulate(
                     hit_crit = bool(_crit_fired)
                 bm.notify(f"hit_count:{eff_name}", t, caster, hit_crit=hit_crit)
 
+        # 스킬 대미지도 무기와 **같은 히트당 값**으로 게이지를 준다. 풀차지 배율은 없다.
+        # 리버렐리오(무기 1발 14.0 + 추가타 5 × 5.6 = 42.0%)와 스노우 화이트 : 헤비암즈
+        # (14.0 + 6 × 5.6 = 47.6%) 실측이 이 규칙을 결정했다. 무기값과 다른 버충 계수를 갖는
+        # 스킬은 `data/burst_gauge.json` `_exceptions`가 대신 값을 준다(라피 : 레드 후드
+        # `부착형 유탄 4`). DoT 틱도 다른 스킬 히트와 같게 둔다(미검증).
+        gauge_src = eff_name or stat
+        gauge_be = (BURST_GAUGE_EXCEPTIONS.get(caster, {})
+                    .get(gauge_src, {}).get("burst_energy"))
+        bm.add_burst_gauge(cs._burst_gain(buffs, hit_count, burst_energy=gauge_be), t, caster,
+                           f"skill:{gauge_src}")
+
         # weapon_hit:name 이벤트 발생 (hit_count:N 트리거로 발사된 발사체 명중 시)
         if eff_name:
             bm.notify(f"weapon_hit:{eff_name}", t, caster)
@@ -2811,6 +3318,22 @@ def simulate(
                 t=t, name=name, caster=caster, target=target, stat=stat, value=value,
             ))
         bm.register_instant_event_handler(_instant_event_cb)
+
+        def _gauge_event_cb(t: float, caster: str, source: str, amount: float, gauge: float):
+            sim_log.gauge_log.append(GaugeLogEntry(
+                t=t, caster=caster, source=source, amount=amount, gauge=gauge,
+            ))
+        bm.register_gauge_event_handler(_gauge_event_cb)
+
+        # 카메라는 풀차지 **게이지** 배율에만 쓰이므로 사이클을 판정하는 모드에서만 적는다
+        # (만충 로그와 같은 이유 — "fixed" baseline 불변). 스쿼드 순서로 적는다.
+        if cfg["burst_gauge_mode"] == "accumulate":
+            _cams = [c["name"] for c in squad if c["name"] in cfg["_camera"]]
+            _who = " · ".join(_cams) if _cams else "없음"
+            if len(_cams) > 1:
+                _who += '  [camera_mode="shared" — 비현실적 상한]'
+            sim_log.burst_log.append(BurstLogEntry(
+                t=0.0, event=f"카메라 초점: {_who}", caster=""))
 
     def _apply_lifesteal(ev: HitEvent, bm: BuffManager, base_stats: dict, t: float):
         buffs = bm.get_buffs(ev.caster, "__enemy__", t)
@@ -2874,6 +3397,8 @@ def simulate(
 
     t = 0.0
     while t <= duration:
+        _update_optimal_range(t)
+        _update_core_exposure(t)
         bm.tick(t)
         _sync_damage_accumulators(t)
 
@@ -2929,6 +3454,8 @@ def simulate(
             _apply_lifesteal(ev, bm, base_stats, t)
         _dot_events.clear()
 
+    result.shotgun_stats = {name: {k: round(v, 4) for k, v in cs.shotgun_stats.items()} for name, cs in char_states.items() if cs.shotgun_stats}
+    result.shotgun_report = {name: cs._shotgun_heatmap.finish() for name, cs in char_states.items() if cs._shotgun_heatmap is not None}
     result.squad_total = sum(result.char_total.values())
     result.hits.sort(key=lambda e: e.t)
 

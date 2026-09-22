@@ -28,6 +28,8 @@ const runtimeFiles = [
   'calculator/damage.py',
   'calculator/sim_result.py',
   'calculator/timeline.py',
+  'calculator/pellet_accuracy.py',
+  'calculator/shotgun_heatmap.py',
   'context/spec.py',
   'context/growth.py',
   'data/parsed_nikke.json',
@@ -35,6 +37,7 @@ const runtimeFiles = [
   'data/char_defaults.json',
   'data/weapon_delays.json',
   'data/weapon_mechanics.json',
+  'data/burst_gauge.json',
   'data/base_stat_tables/affinity.json',
   'data/base_stat_tables/collection.json',
   'data/base_stat_tables/console.json',
@@ -46,6 +49,7 @@ const runtimeFiles = [
 ];
 
 const bridgeTarget = 'bridge.py';
+const growthTarget = 'growth_comparison.py';
 
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
 const normalizeImageName = (value) => value
@@ -77,6 +81,20 @@ const bridgeContent = readFileSync(bridgeSource);
 copyFileSync(bridgeSource, join(runtimeDir, bridgeTarget));
 hash.update(bridgeTarget);
 hash.update(bridgeContent);
+const growthContent = readFileSync(join(siteDir, 'pybridge', growthTarget));
+writeFileSync(join(runtimeDir, growthTarget), growthContent);
+hash.update(growthTarget);
+hash.update(growthContent);
+const recommendationFiles = [
+  ['recommendation.py', join(siteDir, 'pybridge', 'recommendation.py')],
+  ['squad_policy.py', join(repoRoot, 'nikke_mcp', 'squad_policy.py')],
+];
+for (const [target, source] of recommendationFiles) {
+  const content = readFileSync(source);
+  writeFileSync(join(runtimeDir, target), content);
+  hash.update(target);
+  hash.update(content);
+}
 
 const nikke = readJson(join(repoRoot, 'data', 'parsed_nikke.json'));
 const skills = readJson(join(repoRoot, 'data', 'parsed_skills.json'));
@@ -152,12 +170,16 @@ const altBurstStageOf = (name) => {
   return null;
 };
 
-const catalog = names.map((name, index) => {
+const catalog = names.map((name) => {
   const meta = nikke[name];
   const sourceImage = imageIndex.get(normalizeImageName(name));
   let image = null;
   if (sourceImage) {
-    const outputName = `${String(index + 1).padStart(3, '0')}.webp`;
+    // 정렬 순번 URL은 신캐 추가 시 다른 니케의 캐시를 재사용한다.
+    // 이름과 이미지 바이트에 묶어 순서 변경은 안정적이고 이미지 교체는 새 URL이 되게 한다.
+    const imageHash = createHash('sha256').update(name).update('\0')
+      .update(readFileSync(join(repoRoot, 'image', sourceImage))).digest('hex').slice(0, 20);
+    const outputName = `${imageHash}.webp`;
     copyFileSync(join(repoRoot, 'image', sourceImage), join(characterDir, outputName));
     image = `characters/${outputName}`;
   }
@@ -205,7 +227,7 @@ hash.update('settings.json');
 hash.update(settings);
 const manifest = {
   version: hash.digest('hex').slice(0, 16),
-  files: [...runtimeFiles, bridgeTarget],
+  files: [...runtimeFiles, bridgeTarget, growthTarget, ...recommendationFiles.map(([target]) => target)],
 };
 
 writeFileSync(join(runtimeDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -227,3 +249,7 @@ if (strayAliases.length > 0) {
   console.warn(`별칭 표에 없는 캐릭터가 있습니다: ${strayAliases.join(', ')}`);
 }
 console.log(`runtime ${manifest.files.length} files · catalog ${catalog.length} characters (name_code ${withNameCode}, 별칭 ${withAlias}) · settings exported · version ${manifest.version}`);
+
+// Remove retired external-execution artifacts from reused build directories.
+for(const name of readdirSync(publicDir))if(/^external-engine-[a-f0-9]+\.zip$/.test(name)||name==='overload-solver.mjs')rmSync(join(publicDir,name));
+for(const name of ['overload-solver.txt','overload-version.json'])rmSync(join(siteDir,'src/generated',name),{force:true});

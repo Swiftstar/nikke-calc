@@ -572,6 +572,30 @@ describe('character settings editor', () => {
     expect(value).not.toHaveProperty('control');
   });
 
+  it('톡톡이에 «버충 구간만» 정책이 있다 — 고르면 policy가 실리고, 발수를 고쳐도 남는다', () => {
+    characterName = '라피';
+    render();
+    setToggle('[data-custom-toggle]', true);
+    setToggle('[data-control-mode="manual"]', true);
+    setToggle('[data-control="tap_fire"]', true);
+    const policy = root.querySelector<HTMLSelectElement>('[data-control-policy="tap_fire"]')!;
+    expect([...policy.options].map((option) => option.value)).toEqual(['always', 'burst_charge']);
+    expect(policy.value).toBe('always');
+    policy.value = 'burst_charge';
+    policy.dispatchEvent(new Event('change'));
+    expect(value?.control?.tap_fire).toEqual({ rate: 4.4, release: 0.03, policy: 'burst_charge' });
+    // 발수를 고쳐도 정책은 남는다.
+    const rate = root.querySelector<HTMLInputElement>('[data-tap-rate]')!;
+    rate.value = '3.8';
+    rate.dispatchEvent(new Event('input'));
+    expect(value?.control?.tap_fire).toEqual({ rate: 3.8, release: 0.03, policy: 'burst_charge' });
+    // 다시 «항상»으로 돌리면 policy 키가 사라진다.
+    const again = root.querySelector<HTMLSelectElement>('[data-control-policy="tap_fire"]')!;
+    again.value = 'always';
+    again.dispatchEvent(new Event('change'));
+    expect(value?.control?.tap_fire).toEqual({ rate: 3.8, release: 0.03 });
+  });
+
   it('lets the tap-fire rate be typed in and shows the 톡톡이 equivalent', () => {
     characterName = '라피';
     render();
@@ -621,6 +645,72 @@ describe('character settings editor', () => {
     expect(root.textContent).toContain('1~9레벨 계수가 공개되지 않아');
   });
 
+  it('오버로드작 시뮬레이션 — 잠근 줄은 그대로, 변경마다 재화가 쌓이고, 처음으로가 되돌린다', async () => {
+    const { setOverloadSimRng } = await import('./overload-sim');
+    let seed = 9;
+    setOverloadSimRng(() => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; });
+    // 부위 3줄 입력은 레벨별 값표(`overloadSteps`)가 있어야 그려진다.
+    const steps = Array.from({ length: 15 }, (_, at) => (at + 1) * 1.5);
+    const withSteps: SettingsCatalog = {
+      ...settings,
+      overloadFields: {
+        atk_pct: { label: '공격력', unit: '%', min: 0, max: 1000 },
+        crit_dmg: { label: '크리 대미지', unit: '%', min: 0, max: 1000 },
+        def_pct: { label: '방어력', unit: '%', min: 0, max: 1000 },
+      },
+      overloadSteps: { atk_pct: steps, crit_dmg: steps, def_pct: steps },
+    };
+    const host = document.createElement('div');
+    document.body.append(host);
+    let last: CharacterOverrides | null = null;
+    renderCharacterSettings(host, '리타', withSteps, {
+      overloadLines: { 머리: [{ option: 'atk_pct', level: 15 }, { option: 'crit_dmg', level: 9 }, { option: 'def_pct', level: 3 }] },
+    }, (next) => { last = next ?? null; });
+    const q = <T extends Element>(selector: string) => host.querySelector<T>(selector)!;
+    expect(host.querySelector('[data-overload-sim-bar]')).toBeNull();
+
+    q<HTMLButtonElement>('[data-overload-sim]').click();
+    expect(host.querySelector('[data-overload-sim-bar]')).not.toBeNull();
+    expect(q('[data-overload-sim-spent]').textContent).toContain('모듈 0');
+    // 자물쇠는 옵션이 있는 줄에만 산다 — 몸통은 비어 있어 잠글 수 없다.
+    expect(q<HTMLButtonElement>('[data-overload-lock="몸통:0"]').disabled).toBe(true);
+    // 머리 1번 줄을 모듈로, 3번 줄을 락키로 잠근다.
+    q<HTMLButtonElement>('[data-overload-lock="머리:0"]').click();
+    q<HTMLButtonElement>('[data-overload-lock="머리:0"] + .ol-lock-menu [data-overload-lock-as="module"]').click();
+    expect(q('[data-overload-lock="머리:0"]').className).toContain('is-module');
+    q<HTMLButtonElement>('[data-overload-lock="머리:2"]').click();
+    q<HTMLButtonElement>('[data-overload-lock="머리:2"] + .ol-lock-menu [data-overload-lock-as="key"]').click();
+    expect(q('[data-overload-lock="머리:2"]').className).toContain('is-key');
+    // 두 줄이 잠겼으니 세 번째는 못 잠근다.
+    expect(q<HTMLButtonElement>('[data-overload-lock="머리:1"]').disabled).toBe(true);
+    // 비용: 모듈 1 + 모듈 잠금 1 = 2, 락키는 두 번째 잠금이라 30.
+    expect(q('[data-overload-sim-effect="머리"]').textContent).toContain('모듈 2 · 락키 30');
+
+    q<HTMLButtonElement>('[data-overload-sim-effect="머리"]').click();
+    expect(last!.overloadLines!.머리![0]).toEqual({ option: 'atk_pct', level: 15 });
+    expect(last!.overloadLines!.머리![2]).toEqual({ option: 'def_pct', level: 3 });
+    const middle = last!.overloadLines!.머리![1]!;
+    if (middle.option) expect(['atk_pct', 'def_pct']).not.toContain(middle.option);
+    expect(q('[data-overload-sim-spent]').textContent).toContain('모듈 2 · 커스텀락키 30');
+    // 락키 잠금은 유지되고 또 든다.
+    q<HTMLButtonElement>('[data-overload-sim-value="머리"]').click();
+    expect(q('[data-overload-lock="머리:2"]').className).toContain('is-key');
+    expect(q('[data-overload-sim-spent]').textContent).toContain('모듈 4 · 커스텀락키 60');
+    // 처음으로 — 줄·잠금·소모가 시뮬레이션을 켤 때로 돌아간다.
+    q<HTMLButtonElement>('[data-overload-sim-reset]').click();
+    expect(last!.overloadLines!.머리).toEqual([
+      { option: 'atk_pct', level: 15 }, { option: 'crit_dmg', level: 9 }, { option: 'def_pct', level: 3 },
+    ]);
+    expect(q('[data-overload-sim-spent]').textContent).toContain('모듈 0 · 커스텀락키 0');
+    expect(q('[data-overload-lock="머리:0"]').className).not.toContain('is-module');
+    // 끝내기 — 자물쇠와 막대가 사라지고 줄은 남는다.
+    q<HTMLButtonElement>('[data-overload-sim-end]').click();
+    expect(host.querySelector('[data-overload-sim-bar]')).toBeNull();
+    expect(host.querySelector('[data-overload-lock]')).toBeNull();
+    expect(last!.overloadLines!.머리![0]).toEqual({ option: 'atk_pct', level: 15 });
+    host.remove();
+  });
+
   it('updates cube type and renders its selected-level stats and effects', () => {
     setToggle('[data-custom-toggle]', true);
     const cube = root.querySelector<HTMLSelectElement>('[data-cube-name]')!;
@@ -628,9 +718,15 @@ describe('character settings editor', () => {
     cube.dispatchEvent(new Event('change'));
 
     expect(value?.cube).toEqual({ name: '탄충', level: 15 });
-    expect(root.textContent).toContain('공격 2,780');
-    expect(root.textContent).toContain('10발 사격 시 탄환 충전 3발 ▲');
-    expect(root.textContent).toContain('우월 코드 19.09%');
+    // 큐브는 수치 설정 창 밖, 카드의 「수치 설정」과 「컨트롤」 사이에 선다. 스탯 요약은
+    // 카드 폭을 안 잡아먹게 툴팁으로 낸다.
+    const field = root.querySelector<HTMLElement>('[data-cube-field]')!;
+    expect(field.previousElementSibling?.matches('[data-char-panel="settings"]')).toBe(true);
+    expect(field.nextElementSibling?.matches('.control-editor')).toBe(true);
+    expect(root.querySelector('[data-char-panel="settings"] [data-cube-name]')).toBeNull();
+    expect(field.title).toContain('공격 2,780');
+    expect(field.title).toContain('10발 사격 시 탄환 충전 3발 ▲');
+    expect(field.title).toContain('우월 코드 19.09%');
   });
 
   it('searches, adds, edits, deduplicates, and removes advanced stats', () => {
@@ -746,7 +842,7 @@ describe('character settings editor', () => {
     );
     setToggle('[data-custom-toggle]', true);
     root.querySelector<HTMLButtonElement>('[data-char-panel-open="settings"]')!.click();
-    expect(opened).toEqual([{ kind: 'settings', label: '돌파 · 스킬 · 오버로드 · 큐브', hasBurst: false }]);
+    expect(opened).toEqual([{ kind: 'settings', label: '돌파 · 스킬 · 오버로드', hasBurst: false }]);
     // 넘겼으면 제자리에서 펼치지는 않는다 — 같은 것이 두 곳에 보이면 안 된다.
     expect(root.querySelector<HTMLElement>('[data-char-panel="settings"]')!.hidden).toBe(true);
     // 컨트롤은 애초에 창으로 넘기지 않는다 — 카드에서 그 자리에 펴진다.
@@ -853,6 +949,21 @@ describe('character settings editor', () => {
     expect([...body.options].map((option) => option.textContent)).toContain('T9 (옛 설정)');
   });
 
+  it('큐브 드롭다운에도 별명이 붙는다 — 「렐릭 베어 큐브 (재장)」, 이름이 곧 별명이면 그대로', () => {
+    const withReal: SettingsCatalog = {
+      ...settings,
+      cubes: { ...settings.cubes, '렐릭 베어 큐브': { ...settings.cubes['재장']!, id: 1000303 } },
+    };
+    renderCharacterSettings(root, characterName, withReal, value, (next) => { value = next; });
+    setToggle('[data-custom-toggle]', true);
+    const texts = [...root.querySelector<HTMLSelectElement>('[data-cube-name]')!.options].map((option) => option.textContent);
+    expect(texts).toContain('렐릭 베어 큐브 (재장)');
+    expect(texts).toContain('재장');
+    // 값(value)은 정식 이름 그대로다 — 별명은 보여 주는 글일 뿐이다.
+    const values = [...root.querySelector<HTMLSelectElement>('[data-cube-name]')!.options].map((option) => option.value);
+    expect(values).toContain('렐릭 베어 큐브');
+  });
+
   it('lets a character wear no cube at all', () => {
     setToggle('[data-custom-toggle]', true);
     const cube = root.querySelector<HTMLSelectElement>('[data-cube-name]')!;
@@ -863,7 +974,7 @@ describe('character settings editor', () => {
     // 레벨은 뜻이 없으므로 0으로 못 박고, 레벨 칸도 잠근다.
     expect(value?.cube).toEqual({ name: '없음', level: 0 });
     expect(root.querySelector<HTMLSelectElement>('[data-cube-level]')!.disabled).toBe(true);
-    expect(root.querySelector('.cube-summary')!.textContent).toContain('큐브를 끼지 않습니다');
+    expect(root.querySelector<HTMLElement>('[data-cube-field]')!.title).toContain('큐브를 끼지 않습니다');
     expect(root.querySelector('[data-loadout-summary]')!.textContent).toContain('큐브 없음');
 
     // 다시 큐브를 고르면 레벨이 되살아난다.
@@ -1020,5 +1131,43 @@ describe('부위 단위 오버로드 옮기기', () => {
     expect(lines['다리']![0]!.option).toBe('atk_pct');
     // 합계도 줄에서 다시 세어진다 — 붙였는데 계산이 안 따라가면 안 된다.
     expect(last!.overload!.atk_pct).toBeGreaterThan(0);
+  });
+});
+
+describe.each(['길티 : 마이티 바니', '신 : 스위프트 바니'])('%s 바니 모드 특수 조작', (name) => {
+  const catalog: SettingsCatalog = { ...settings, characters: { ...settings.characters,
+    [name]: { ...settings.characters['리타']!, weaponType: 'SR', recommendedControl: { bunny_mode: 'engage' } },
+  } };
+  function setup(initial: CharacterOverrides = {}) {
+    const host = document.createElement('div');
+    document.body.append(host);
+    let value = initial;
+    const render = () => renderCharacterSettings(host, name, catalog, value, next => { value = next ?? {}; render(); });
+    render();
+    return { host, value: () => value };
+  }
+  it('스탠스에서 인게이지를 선택하고 다른 설정 변경 후에도 유지한다', () => {
+    const { host, value } = setup({ control: { bunny_mode: 'stance' } });
+    expect(host.querySelector<HTMLInputElement>('[data-bunny-mode="stance"]')!.checked).toBe(true);
+    host.querySelector<HTMLInputElement>('[data-bunny-mode="engage"]')!.click();
+    expect(value().control?.bunny_mode).toBe('engage');
+    expect(host.querySelector<HTMLInputElement>('[data-bunny-mode="stance"]')!.checked).toBe(false);
+    host.querySelector<HTMLInputElement>('[data-control="cover"]')!.click();
+    expect(value().control).toEqual({ bunny_mode: 'engage', cover: { policy: 'own_full_burst' } });
+    host.querySelector<HTMLInputElement>('[data-bunny-mode="stance"]')!.click();
+    expect(value().control?.bunny_mode).toBe('stance');
+    expect(host.querySelector<HTMLInputElement>('[data-bunny-mode="engage"]')!.checked).toBe(false);
+  });
+  it('저장된 스탠스를 복원하고 추천 자동으로 돌아가면 인게이지가 된다', () => {
+    const { host, value } = setup({ control: { bunny_mode: 'stance' } });
+    expect(host.querySelector<HTMLInputElement>('[data-bunny-mode="stance"]')!.checked).toBe(true);
+    host.querySelector<HTMLInputElement>('[data-control-mode="auto"]')!.click();
+    expect(value().control).toBeUndefined();
+    expect(host.querySelector<HTMLInputElement>('[data-bunny-mode="engage"]')!.checked).toBe(true);
+  });
+  it('다른 캐릭터에는 표시하지 않는다', () => {
+    const host = document.createElement('div');
+    renderCharacterSettings(host, '리타', settings, {}, () => {});
+    expect(host.querySelector('[data-bunny-mode]')).toBeNull();
   });
 });

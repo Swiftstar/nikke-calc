@@ -277,7 +277,10 @@ python calculator/damage.py
 | `attack_speed_pct` | `attack_speed_pct` | — | ✅ | 타임라인 처리. `_current_fire_rate()`에서 발사 속도에 반영 |
 | `mg_warmup_speed_pct` | `mg_warmup_speed_pct` | — | ✅ | MG 예열 진행 속도 % (음수 = 감소). `_fire()`의 `warmup_shots` 증가량에 `(1 + val/100)` 배율 적용. -100이면 증가 0(예열 정지). 식음 속도는 영향 안 받음. **양수도 성립** — +100이면 예열 진행 2배(레이 (가칭) `정비 및 보급`). 같은 대상에 +100과 −100이 동시 활성이면 **단순 합산해 0(예열 정지)** 이 맞다(유저 확정) — 레이의 13초 예열 버프와 아스카 `긴급 수복 2`의 3초 감소가 겹치는 구간. 아스카 : WILLE, 레이 (가칭) |
 | `accuracy_pct` | `accuracy_pct` | — | ⚠️ | DealForm 어느 항에도 안 들어간다. 단 `timeline.py`의 `_core_hit_prob()`가 탄착군 직경(`base_diameter - acc_slope × accuracy_pct`) 산출에 쓰므로 **코어 보유 적(`core_px > 0`)에서는 코어히트율을 통해 딜에 반영된다**. 기본 보스는 `core_px = 0`이라 무발동. 메카닉 조사 기록은 `context/scenarios/명중률 탄착군.md` |
-| `burst_charge_speed_pct` | — | — | 🚫 | 버스트 게이지 모델 단순화로 보류 |
+| `burst_charge_speed_pct` | `burst_charge_speed_flat` | — | ✅ | **버스트 충전 속도** — 수령자와 무관하게 **시전자의 히트당 기준 게이지 × 값%** 를 매 히트에 가산한다(곱연산 아님). 기준값은 시전자가 일반 공격을 명중시키기 전에는 CDN `burst_energy_raw`(발당), 뒤에는 `burst_energy`(대상). `_route_burst_charge()`가 get_buffs 라이브 경로에서 환산하고 `CharState._burst_gain()`이 히트 수만큼 더한다. 게이지 자체는 두 모드 모두 계산·기록되며 사이클 판정은 `burst_gauge_mode = "accumulate"`에서만 쓴다(원본 저장소 이식 2026-09-22) |
+| `burst_charge_speed_flat` | `burst_charge_speed_flat` | — | ✅ | 내부 키. 위 환산 결과(히트당 %p). parsed_skills에는 안 나온다 |
+| `debuff_immune_count` | — | — | ✅ | 약화 효과 **N회 면역**(횟수 소모형). `_activate()` harmful 필터에서 `_consume_immune_charge()`가 대상별로 하나씩 쓴다. 같은 이름의 항목들은 최대값 하나를 공유하고 재부여 시 소모량이 0으로 돌아간다. 아직 쓰는 스킬 없음(원본 이식) |
+| `max_hp_from_max_hp_pct` | — | — | ✅ | **시전자의 최종 최대 체력 비례** 최대 체력 N% ▲. 부여 시점의 시전자 `effective_max_hp` × N%를 `ActiveBuff.hp_bonus_flat`에 스냅샷해 `effective_max_hp()`가 flat으로 더한다(재귀 회피). 현재 체력도 같이 오른다. 아직 쓰는 스킬 없음(원본 이식) |
 | `optimal_range_max` | — | — | ❌ | 최대 적정 사거리 증가. 미구현 |
 | `optimal_range_max_pct` | — | — | ❌ | 최대 적정 사거리 **% ▲**(`optimal_range_max`의 비율 표기판). 계산기에 사거리 항이 없어 **파싱만 하고 구현하지 않는다**(유저 결정, 2026-08-17) — 딜 기여 0. 레오나 `우렁찬 포효` |
 | `optimal_range_min` | — | — | ❌ | 최소 적정 사거리 % ▲. 미구현 |
@@ -309,7 +312,7 @@ python calculator/damage.py
 | `heal_overcharge_store` | — | — | ❌ | 초과 회복 저장. 미구현 |
 | `heal_overcharge_store_atk_pct` | — | — | ❌ | ATK N%까지 받는 회복량 저장. 힐 모델 없음 |
 | `shield_restore_pct` | — | — | ❌ | 보호막 회복 ▲. 아군 피격·보호막 소모 모델 없음 |
-| `buff_max_stack_add` | — | buff_manager | ✅ | 중첩 가능 이로운 효과의 **중첩 한도(`max_stack`) N개 ▲**. `_effective_stack_cap()`이 대상 아군에게 활성인 효과를 합산해 일반 재부여와 `buff_stack_add` 즉발 양쪽 상한에 적용. 원래 `max_stack > 1`인 버프만 확장하며 비중첩·무제한 버프는 바꾸지 않음. 플로라·미카 : 스노우 버디·디젤 |
+| `buff_max_stack_add` | — | buff_manager | ✅ | 중첩 가능 이로운 효과의 **중첩 한도(`max_stack`) N개 ▲**. `_effective_stack_cap()`이 대상 아군에게 활성인 효과를 합산해 일반 재부여와 `buff_stack_add` 즉발 양쪽 상한에 적용. 원래 `max_stack > 1`인 버프만 확장하며 비중첩·무제한 버프는 바꾸지 않음. 플로라의 현재 중첩 증가에는 사용하지 않음 |
 | `burst_dmg_single_pct` | — | — | ❌ | 단일 대상 버스트 대미지 ▲. 미구현 (`burst_dmg`로 통합 필요 또는 별도 처리) |
 | `burst_dmg_aoe_pct` | `burst_dmg_aoe_pct` | ⑤ | ✅ | 전체 대상 버스트 대미지 ▲. `_factor5()`의 `is_burst_damage` 블록 **안**에서 `hit_type["is_aoe_burst"]`일 때만 가산 — 구조적으로 `bonus_damage`가 탈 수 없다. 플래그는 `timeline.simulate` `_handle_damage_eff`가 `base_stat=="burst_damage" and target=="all_enemies"`로 세운다. **AoE 판정 기준**: 버스트 스킬의 대상 설명이 `적 전체에게`로 끝나는 효과 — `적 전체에게(파츠 포함)`처럼 괄호 부연이 붙어도 포함한다(레이븐). **같은 clause의 `bonus_damage`·`dot_damage`는 제외** — "버스트 스킬 대미지"만 증폭한다(이사벨 `타겟 마킹 2·3` 추가 대미지는 비대상, 유저 확인). 트리나 `뻗은 뿌리`/`시든 뿌리` |
 | `burst_cooldown` | `burst_cooldown` | — | ✅ | buff 상태로 지속. `BurstManager.tick()`의 `full_burst_start` 분기가 풀버스트 1회당 1회씩 `burst_ready_at`을 당긴다 (`_cd_applied_at_cast`로 cast 시 반영분 중복 방지) |
@@ -389,13 +392,14 @@ python calculator/damage.py
 
 | stat | 처리 위치 | 구현 상태 | 비고 |
 |---|---|---|---|
+| `bunny_mode_switch` | `_dispatch_instant()` | ✅ | `mode: stance/engage/toggle`, 반대 모드 보유 아군만 원자적 동기화. 길티 : 마이티 바니 프리뷰 |
 | `burst_cooldown_reduce` | `_dispatch_instant()` → timeline 핸들러 | ✅ | |
 | `skill_cooldown_reduce_pct` | `_dispatch_instant()` 내장 분기 | ✅ | **스킬 재사용 시간 N% ▼ (즉시 1회)** — 대상 캐릭터가 시전자인 `every:Ns` 효과의 **남은 시간**(`_next_fire[eid]`의 `next_t - t`)에 `(1 − N/100)`을 곱한다. `interval` 자체는 건드리지 않는다(다음 주기는 원래 길이로 복귀). `skill_cooldown_pct`(주기에 곱하는 buff)와 혼동 주의 — 이쪽은 잔여분만 깎는 instant다. `burst_cooldown_reduce`(초 단위 instant)의 % 스킬판. `target_effect` 미지원 — 시전자의 모든 `every:Ns`에 일괄 적용(`skill_cooldown_pct`와 같은 범위). 센티 `보수공사` |
 | `ammo_charge_pct` | `_dispatch_instant()` → timeline 핸들러 | ✅ | |
 | `ammo_charge_flat` | `_dispatch_instant()` → timeline 핸들러 | ✅ | |
-| `burst_charge_pct` | — | 🚫 | 버스트 게이지 모델 단순화로 보류 |
+| `burst_charge_pct` | `_dispatch_instant()` → timeline 핸들러 | ✅ | 「버스트 게이지 충전 N%」 — 값을 **그대로 1회** 공용 게이지에 가산한다(`bm.add_burst_gauge`). `target: all_allies`여도 1회다(게이지가 스쿼드 공용 1개). 충전 창(`burst_gauge_charging`) 밖에서는 버려진다. 헬름 `진두지휘 3`, D, 라이, 로산나 … |
 | `heal_hp_pct` | `_dispatch_instant()` → timeline 핸들러 | ✅ | `state["hp"]` 갱신 후 `hp_pct` 재동기화 |
-| `buff_stack_add` | `_dispatch_instant()` | ✅ | 스택 +N과 함께 **대상 버프의 지속시간도 갱신**한다(유저 확정: 일반 동작 — 원문 `[스택명 : ...] [N 중첩] [M초 유지]`는 버프를 다시 붙이는 문장이다). `duration: -1`(영구, `expires_at == inf`)은 갱신 대상 아님. 스택이 증가하면 `stack_reach:버프명:N`도 notify한다(`_activate()`와 동일). notify는 `_active` 순회가 끝난 뒤 emit — 순회 중 emit하면 재진입으로 리스트가 바뀐다 |
+| `buff_stack_add` | `_dispatch_instant()` | ✅ | `target_effect` 미지정 시 대상 아군의 활성 이로운 중첩 버프를 현재 상한 내에서 +N. 속성 대상·면역·미부여/만료를 구분하며 다중 대상의 중첩은 수령자별로 보존한다. 범용 중첩 조작은 원 버프의 만료 시각을 유지한다. named 지정 시에는 스택 +N과 함께 **대상 버프의 지속시간도 갱신**한다(유저 확정: 일반 동작 — 원문 `[스택명 : ...] [N 중첩] [M초 유지]`는 버프를 다시 붙이는 문장이다). `duration: -1`(영구, `expires_at == inf`)은 갱신 대상 아님. 스택이 증가하면 `stack_reach:버프명:N`도 notify한다(`_activate()`와 동일). notify는 `_active` 순회가 끝난 뒤 emit — 순회 중 emit하면 재진입으로 리스트가 바뀐다 |
 | `buff_stack_remove` | `_dispatch_instant()` | ✅ | |
 | `buff_stack_init` | `_dispatch_instant()` | ✅ | `target_effect` 버프가 없을 때만 N 스택으로 초기 생성. `_effects`에서 버프 정의 조회 후 `ActiveBuff` 직접 생성 |
 | `debuff_stack_add` | `_dispatch_instant()` | ✅ | |
@@ -417,7 +421,7 @@ python calculator/damage.py
 | `named_buff_duration_extend` | `_dispatch_instant()` | ✅ | `target_effect` 필수. 해당 이름 및 `"이름 N"` 형태 부속 버프의 `expires_at += fixed_value`. 스쿼드 브로드캐스트 방식으로 발동. 적 대상 효과에도 걸린다 — `enemies_*`는 lazy가 아니라 즉시 `["__enemy__"]`로 풀리므로 연장 항목과 피연장 버프가 같은 센티널로 만난다. **DoT는 `_dot_timers`의 `expires_at`도 함께 늘린다** — 틱 스케줄이 `ActiveBuff`와 별도로 복사돼 있어 한쪽만 늘리면 표시만 길어지고 실제 틱은 원래 시각에서 끊긴다. 사쿠라 : 블룸 인 서머 `피어나다 3`(적측 `벚꽃잎` 연장). |
 | `force_move` | — | 🚫 | 복잡 메카닉, `_unparseable` |
 | `force_skill_use` | `_dispatch_instant()` | ✅ | `[스킬 N 강제 사용]`. `target_skill`이 가리키는 슬롯의 **활성 판본**(애장품 단계 반영) 효과 전체를 즉시 1회 발동한다. 특정 효과 하나가 아니라 슬롯 단위라 `target_effect`가 아닌 `target_skill`을 쓴다. 율리아 `크레센도 2`(애장품1 → 스킬1), 사쿠라 : 블룸 인 서머 `피어나다`(→ 스킬2, 현재는 스킬2 timing에 `battle_start`를 얹은 우회 표현 — 구현과 함께 전환) |
-| `feather_refresh` | `_dispatch_instant()` | ✅ | **아인 전용**. 니어 페더 소환체를 슬롯 단위로 (재)소환한다. `feather_id`로 식별하고 `feather_slots`(슬롯별 지속시간 배열, `-1`=무제한) 길이만큼 소환하며, 이미 있던 슬롯도 **지속시간·공격 쿨을 초기화**한다(전투 시작 4기 / 버스트 6기 모두 같은 stat). 상태는 `state["feathers"][caster][feather_id]`. 주기 계산용 `feather_interval_base`·`feather_interval_mult`를 함께 싣는다. 소비자는 `feather_tick` timing과 `armor_break_damage:니어 페더`(`ref_count()`가 게이지와 같은 자리에서 생존 수를 돌려준다). 수치가 스킬 텍스트에 없는 추정치라 코드 상수가 아니라 JSON 필드로 둔다 — 정본: `context/scenarios/아인.md §니어 페더 메커니즘` |
+| `feather_refresh` | `_dispatch_instant()` | ✅ | **아인 전용**. 니어 페더 소환체를 슬롯 단위로 (재)소환한다. `feather_id`로 식별하고 `feather_slots`(슬롯별 지속시간 배열, `-1`=무제한) 길이만큼 소환하며, 이미 있던 슬롯도 **지속시간·공격 쿨을 초기화**한다(전투 시작 4기 / 버스트 6기 모두 같은 stat). 상태는 `state["feathers"][caster][feather_id]`. 주기 계산용 `feather_interval_base`·`feather_interval_reduction_pct`를 함께 싣는다. 소비자는 `feather_tick` timing과 `armor_break_damage:니어 페더`(`ref_count()`가 게이지와 같은 자리에서 생존 수를 돌려준다). 수치가 스킬 텍스트에 없는 추정치라 코드 상수가 아니라 JSON 필드로 둔다 — 정본: `context/scenarios/아인.md §니어 페더 메커니즘` |
 
 ---
 
@@ -450,6 +454,8 @@ python calculator/damage.py
 | `conditional_hit_count:그룹:N` | ✅ | 조건을 만족한 자기 일반 공격 명중만 그룹별로 누적해 N회마다 발동. 쿠루미의 풀버스트 중 36회 명중 |
 | `squad_burst_cast:N` | ✅ | `bm.notify("squad_burst_cast:N", ...)` |
 | `hit_count:N` | ✅ | `bm.notify("hit_count", ...)`. `trigger_count_reduce` 버프로 N 감소 가능 |
+| `on_attack_count:N` | ✅ | 「일반 공격 N회 **공격** 시」 — 발사 카운터. `bm.notify("on_attack", ...)`를 세며 총구·펠릿과 무관하게 발사 1회당 1이다(`hit_count:N`은 명중·탄 단위). `trigger_count_reduce` 적용. 아직 쓰는 스킬 없음(원본 이식 2026-09-22) |
+| `pellet_hit_in_shot:N` | ✅ | 「일반 공격 1회로 펠릿 N개 이상 명중 시」 — **한 발 안의** 명중 펠릿 수. 타임라인 `_tick_auto`가 발사마다 `bm.pellet_in_shot_thresholds()`의 임계값과 비교해 통지한다(기대값 모드는 기대 명중 수). 누적 `pellet_hit_count:N`과 다른 축. 아직 쓰는 스킬 없음 |
 | `hit_count:[스킬명]:N` | ✅ | named damage effect 명중 N회마다 발동. `_timing_match()`에 분기 추가. 타임라인 `_handle_damage_eff()` hit 루프 안에서 `bm.notify("hit_count:{eff_name}", t, caster)` 호출 |
 | `crit_hit_count:N` | ✅ | `bm.notify("crit_hit", ...)`. `trigger_count_reduce` 버프로 N 감소 가능 |
 | `full_charge` | ✅ | `bm.notify("full_charge", ...)` |
@@ -500,7 +506,7 @@ python calculator/damage.py
 | `non_full_charge_hit_count:N` | ✅ | 차지형 무기의 `is_full=False` 발사 뒤 `non_full_charge_hit`을 통지하고 캐스터별 N회마다 발동. 크러스트 `마이야르` |
 | `event:cover_healed` | ✅ | `cover_heal_pct` instant 핸들러가 회복 대상에게 같은 프레임에 통지. 엄폐 HP 수치는 모델 밖이어도 후속 효과는 발동. 티아 `파충류 애호가` |
 | `weapon_hit:[name]` | ✅ | `_timing_match`에 분기 있음. notify 호출처는 `_handle_damage_eff()` **한 곳뿐**으로, `[name]`은 **named damage 효과**(발사체 등)의 이름이다 — 그 효과가 명중할 때마다 발생한다(라피 : 레드 후드 `부착형 유탄 4`). **`weapon_change` 모드의 사격은 이 이벤트를 쏘지 않는다** (`_tick_weapon_change()`에 호출처 없음, 2026-08-13 확인) → 모드의 매 발마다 붙는 효과는 `hit_count:1` + `self_state:[모드명]`으로 센다 |
-| `feather_tick` | ✅ | **아인 전용**. 니어 페더 소환체의 공격 주기 틱. `tick()`이 `state["feathers"]`를 돌며 `notify("feather_tick", ...)`. `_timing_match`는 `timing == event` 일반 분기를 그대로 탄다(별도 분기 불필요). 주기가 고정이 아니라 생존 수 n에 대해 `base × mult^(n-1)`이고, **다음 발사는 직전 예약 시각 기준**으로 잡는다(프레임 양자화 드리프트 방지). 만료로 수가 줄어도 예약된 시각은 바뀌지 않는다 — 재소환(`feather_refresh`)만 초기화한다. 정본: `context/scenarios/아인.md §니어 페더 메커니즘` |
+| `feather_tick` | ✅ | **아인 전용**. 니어 페더 소환체의 공격 주기 틱. `tick()`이 `state["feathers"]`를 돌며 `notify("feather_tick", ...)`. `_timing_match`는 `timing == event` 일반 분기를 그대로 탄다(별도 분기 불필요). 주기가 고정이 아니라 생존 수 n에 대해 `base × (1 − reduction_pct/100 × (n−1))`이고, **다음 발사는 직전 예약 시각 기준**으로 잡는다(프레임 양자화 드리프트 방지). 만료로 수가 줄어도 예약된 시각은 바뀌지 않는다 — 재소환(`feather_refresh`)만 초기화한다. 정본: `context/scenarios/아인.md §니어 페더 메커니즘` |
 | `squad_ammo_consume:N` | ✅ | `_timing_match`에 분기 있음(`buff_manager.py`). `notify()`가 `__squad__` 누적 카운터로 집계해 스쿼드 전원의 효과를 순회(`_squad_notify_index`). 발생처는 `timeline.py` 자동사격·풀차지 발사 두 경로에서 **1발당 1회**, 그리고 `gauge_consume_as_ammo`(벨벳). 소비자: 리틀 머메이드 `거품 난사`(500발, `sequential_damage:10`)·`버블 오더 4`(400발), 일레그 : 붐 앤 쇼크 `고스트 버스터 2`(100발), 신데렐라 : 크리스탈 웨이브 `뷰티-풀 3`(200발) |
 
 ### condition
@@ -530,7 +536,7 @@ python calculator/damage.py
 | `back_row` | `_condition_ok` 전용 | ✅ | 스쿼드 인덱스 1 또는 3 = 후열 (포지션 2번, 4번) |
 | `squad_ally_exists` | `_condition_ok` 전용 | ✅ | 소속 스쿼드(`parsed_nikke["squad"]`, 카운터스·이지스 등)가 같은 아군이 자신 외에 편성돼야 True. 의상 버전도 원본과 같은 스쿼드일 수 있다(라피 : 레드 후드 = `Counters`). 스쿼드가 없는 더미(`test_B*`)는 False |
 | `focusing` | — | ❌ | 미구현. `focus_fire` stat과 연동 필요 |
-| `not_core` | — | ❌ | 미구현. hit_type 연동 필요 |
+| `not_core` | `_condition_ok` 전용 | ✅ | 트리거를 발생시킨 일반 공격의 비코어 여부. `hit_count:N`은 코어 포함 전체 명중을 계수하고 N번째 발에서만 조건 판정. 기대값 모드는 해당 발의 비코어 분율을 효과별 누적 |
 | `core_hit_count:1` | — | ❌ | 미구현. timing이 아닌 condition으로 쓰일 때 |
 | `self_state:상태명` | 양쪽 모두 | ✅ | `_has_self_state()` 단일 창구. `_active` 버프 **+ `state["weapon_change"]` 무기 변경 모드명**을 함께 본다 — 모드는 `_active`에 등록되지 않으므로 이걸 빼면 `self_state:저격 모드`류가 영구 거짓이 된다. 나유타 `위선 5/6`(`self_state:기억 연소`), 신데렐라 : 크리스탈 웨이브 `모드 스왑 2` |
 | `not_self_state:상태명` | 양쪽 모두 | ✅ | 위와 같은 창구의 부정. 신데렐라 : 크리스탈 웨이브 `모드 스왑 3` |
@@ -547,6 +553,7 @@ python calculator/damage.py
 | `has_burst1_ally` | `_condition_ok` 전용 | ✅ | `state["burst_stages"]` |
 | `no_defender_ally` | `_condition_ok` 전용 | ✅ | 자신을 제외한 편성에 방어형 아군이 없을 때 |
 | `has_defender_ally` | `_condition_ok` 전용 | ✅ | 자신을 제외한 편성에 방어형 아군이 있을 때 |
+| `optimal_range` | `_condition_ok` 전용 | ✅ | 시전자 무기군이 `enemy["optimal_range_weapons"]`에 있을 때(③ 적정 사거리 +30%와 같은 판정). 전투 조건이 무기군을 명시하지 않으면 무발동. 아직 쓰는 스킬 없음 |
 | `no_burst1_ally` | `_condition_ok` 전용 | ✅ | `state["burst_stages"]` |
 | `enemy_count_below:N` | 양쪽 모두 | ✅ | 랩쳐/적 N기 이하. 단일 보스 count=1 → 1<=N 항상 True. 마르차나 : 마린 스터디 |
 | `enemy_count_above:N` | 양쪽 모두 | ✅ | 랩쳐/적 N기 이상. 단일 보스 count=1 → N>=2면 False, 무발동. **`_RUNTIME_COND_PREFIXES`에도 등록**(2026-08-08) — `passive` 버프는 조건 미충족이어도 등록된 뒤 게이팅을 runtime 재평가에만 의존하므로, 여기 없으면 보스전에서 그대로 적용된다(맥스웰 `일렉트릭 샷`). 마르차나 : 마린 스터디, 맥스웰 |
@@ -602,6 +609,7 @@ lazy resolve: 버프 반영 스탯 기준 정렬 필요 target → `_activate()`
 | `"allies_weapon_top_atk:무기유형:N"` | ✅ | ✅ | 해당 무기 소지 아군 중 **최종 공격력 최고 N기**. `allies_weapon:X` ∩ `allies_top_atk:N`. 공격력 정렬이므로 `_LAZY_RESOLVE_PREFIXES` 등록 필수. 시전자 포함(자신 제외 표기 없음). 매칭 아군이 N보다 적으면 있는 만큼. 레오나 `용기있는 시선 2`(`SG:2`) |
 | `"allies_class:클래스"` | ❌ | ✅ | 파싱 키 `공격`·`방어`·`지원`을 로스터 값 `화력형`·`방어형`·`지원형`으로 정규화해 `parsed_nikke["class"]`와 비교 |
 | `"allies_code:코드"` | ❌ | ✅ | `parsed_nikke["element_code"]` 기준 |
+| `"allies_code_excl_self:코드"` | ❌ | ✅ | 코드가 일치하는 아군 중 시전자 제외. 메이든 : 아이스 로즈의 MP 충전 버프 |
 | `"allies_code_weapon:코드:무기유형"` | ❌ | ✅ | 코드+무기 복합 조건 아군 전체. `_code_weapon()` 헬퍼가 `element_code`·`weapon_type` 동시 필터. 트리나(`전격:AR`) |
 | `"allies_code_weapon_leftmost:코드:무기유형:N"` | ❌ | ✅ | 위 조건을 만족하는 아군 중 **스쿼드 입력 순서 앞 N명**. 고정 속성 기반이라 lazy resolve 불필요. 매칭 0명이면 빈 리스트. 트리나(`전격:AR:1`) |
 | `"allies_below_def"` | ✅ | ✅ | `_LAZY_RESOLVE_PREFIXES` 등록됨. 시전자보다 방어력 낮은 아군 전체 |

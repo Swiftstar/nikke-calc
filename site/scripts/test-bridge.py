@@ -13,6 +13,56 @@ from context.spec import is_preview
 from context.spec import _nikke as parsed_nikke
 
 
+class PelletBridgeTest(unittest.TestCase):
+    def test_spatial_model_and_validation(self):
+        payload = {"squad": ["드레이크"], "duration": 10, "enemyDef": 0, "enemyCode": "", "corePx": 0, "hasParts": False, "seed": 42, "shotgunModel": "spatial-v1", "rngMode": "expected"}
+        small = json.loads(run_request(json.dumps({**payload, "shotgunTargetDiameter": 80})))
+        large = json.loads(run_request(json.dumps({**payload, "shotgunTargetDiameter": 360})))
+        self.assertLess(small['squadTotal'], large['squadTotal'])
+        windowed = json.loads(run_request(json.dumps({**payload, 'shotgunSizeWindows': [{'from': 0, 'to': 10, 'diameter': 80}]})))
+        self.assertEqual(windowed['squadTotal'], small['squadTotal'])
+        with self.assertRaises(ValueError):
+            run_request(json.dumps({**payload, 'shotgunSizeWindows': [{'from': 3, 'to': 2, 'diameter': 80}]}))
+        for values in ({'shotgunModel': 'wrong'}, {'shotgunTargetDiameter': -1}):
+            with self.assertRaises(ValueError):
+                run_request(json.dumps({**payload, **values}))
+
+    def test_probability_and_geometry_reach_engine(self):
+        from unittest.mock import patch
+        payload = {"squad": ["드레이크"], "duration": 10, "enemyDef": 0, "enemyCode": "", "corePx": 0, "hasParts": False, "seed": 42}
+        with patch('calculator.buff_manager.char_effects', return_value=[]):
+            full = json.loads(run_request(json.dumps(payload)))['squadTotal']
+            zero = json.loads(run_request(json.dumps({**payload, 'shotgunHitRate': 0})))['squadTotal']
+            geometry = {'shapes': [], 'parts': [], 'center': {'x': 0, 'y': 0}}
+            missing = json.loads(run_request(json.dumps({**payload, 'shotgunGeometry': geometry})))['squadTotal']
+        self.assertGreater(full, 0)
+        self.assertEqual(zero, 0)
+        self.assertEqual(missing, 0)
+        with self.assertRaises(ValueError):
+            run_request(json.dumps({**payload, 'shotgunHitRate': 1.01}))
+
+
+class FirstBurstBridgeTest(unittest.TestCase):
+    def test_shotgun_report_is_opt_in_and_preserves_damage(self):
+        payload = {"squad": ["드레이크"], "duration": 3, "enemyDef": 0, "enemyCode": "", "corePx": 52, "hasParts": False, "seed": 42, "shotgunModel": "spatial-v1", "shotgunTargetDiameter": 120}
+        plain = json.loads(run_request(json.dumps(payload)))
+        report = json.loads(run_request(json.dumps({**payload, 'shotgunReport': True})))
+        self.assertNotIn('shotgunReport', plain)
+        self.assertEqual(plain['squadTotal'], report['squadTotal'])
+        self.assertGreater(report['shotgunReport']['드레이크']['fired'], 0)
+
+    def test_first_burst_reaches_engine_and_defaults_to_zero(self):
+        # 첫 버스트 시간은 구 방식(고정 시간)의 값이다 — 신 방식은 게이지가 정하므로 이 값을 안 본다.
+        payload = {"squad": ["리타", "크라운", "앨리스"], "duration": 12, "enemyDef": 0, "enemyCode": "", "corePx": 0, "hasParts": False, "seed": 42, "detail": True, "burstGaugeMode": "legacy"}
+        default = json.loads(run_request(json.dumps(payload)))
+        immediate = json.loads(run_request(json.dumps({**payload, "firstBurstTime": 0})))
+        delayed = json.loads(run_request(json.dumps({**payload, "firstBurstTime": 5})))
+        self.assertEqual(default, immediate)
+        self.assertGreater(delayed["timeline"]["fullBurst"][0][0], immediate["timeline"]["fullBurst"][0][0] + 4.9)
+        with self.assertRaises(ValueError):
+            run_request(json.dumps({**payload, "firstBurstTime": -1}))
+
+
 class HackBridgeTest(unittest.TestCase):
     """핵(`calculator/cheats.py`)이 payload에서 엔진까지 이어지는지."""
 
@@ -25,6 +75,15 @@ class HackBridgeTest(unittest.TestCase):
         "hasParts": False,
         "seed": 42,
     }
+
+    def test_mcp_envelope_uses_same_result_and_effective_growth(self):
+        payload = {**self.BASE, 'synchroLevel': 350,
+                   'characters': {'리타': {'skillLevels': {'1': 4, '2': 5, '3': 6}}}}
+        raw = json.dumps(payload, ensure_ascii=False)
+        ordinary = json.loads(run_request(raw))
+        envelope = json.loads(run_request(raw, include_effective=True))
+        self.assertEqual(envelope['result'], ordinary)
+        self.assertEqual(envelope['effectiveCharacters'][0]['level'], 350)
 
     def _total(self, hacks=None):
         payload = {**self.BASE, **({"hacks": hacks} if hacks is not None else {})}
@@ -46,6 +105,24 @@ class HackBridgeTest(unittest.TestCase):
     def test_bad_multiplier_is_refused(self):
         with self.assertRaises(ValueError):
             self._total({"damageMult": 0})
+
+
+class DefenseRateBridgeTest(unittest.TestCase):
+    def test_windows_reach_engine(self):
+        base = {'squad': ['리타'], 'duration': 4, 'enemyDef': 31784, 'seed': 42, 'rngMode': 'expected'}
+        def total(windows):
+            return json.loads(run_request(json.dumps({**base, 'defenseRateWindows': windows})))['squadTotal']
+        ordinary = total([])
+        self.assertEqual(ordinary, total([{'from': 10, 'to': 20, 'rate': 60}]))
+        self.assertAlmostEqual(total([{'from': 0, 'to': 5, 'rate': 60}]) / ordinary, .4, places=4)
+        partial = total([{'from': 0, 'to': 2, 'rate': 60}])
+        self.assertGreater(partial, ordinary * .4)
+        self.assertLess(partial, ordinary)
+
+    def test_invalid_rate_rejected(self):
+        with self.assertRaises(ValueError):
+            run_request(json.dumps({'squad': ['리타'], 'duration': 4, 'enemyDef': 31784,
+                'defenseRateWindows': [{'from': 0, 'to': 3, 'rate': 101}]}))
 
 
 class CoreShareTest(unittest.TestCase):
@@ -86,6 +163,22 @@ class CoreShareTest(unittest.TestCase):
         for name, row in rows.items():
             self.assertGreater(row["shots"], 0, name)
             self.assertEqual(row["coreShots"], 0, name)
+
+    def test_core_windows_reach_engine_and_empty_keeps_existing_behavior(self):
+        base = self._breakdown(duration=4)
+        self.assertEqual(base, self._breakdown(duration=4, coreWindows=[]))
+        hidden = self._breakdown(duration=4, coreWindows=[{"from": 10, "to": 20}])
+        for row in hidden.values():
+            self.assertEqual(row["coreShots"], 0)
+        partial = self._breakdown(duration=4, coreWindows=[{"from": 0, "to": 2}])
+        self.assertGreater(sum(row["coreShots"] for row in partial.values()), 0)
+        self.assertLess(sum(row["coreShots"] for row in partial.values()),
+                        sum(row["coreShots"] for row in base.values()))
+
+    def test_invalid_core_windows_are_rejected(self):
+        for windows in ["invalid", [{"from": 2, "to": 1}], [{"from": -1, "to": 2}]]:
+            with self.subTest(windows=windows), self.assertRaises(ValueError):
+                self._breakdown(coreWindows=windows)
 
     def test_skill_damage_is_not_counted_as_a_shot(self):
         rows = self._breakdown(duration=120)
@@ -635,12 +728,12 @@ class BrowserBridgeTest(unittest.TestCase):
         )
 
     def test_bundled_temporary_characters_simulate_with_fiction_warning(self):
-        entries = json.loads((SITE_DIR / "src/temporary-characters.json").read_text())
+        entries = [json.loads((SITE_DIR / "src/fixtures/fictional-character.json").read_text(encoding="utf-8"))]
         names = [entry["name"] for entry in entries]
         custom = {entry["name"]: {"nikke": entry["nikke"], "skills": entry["skills"]}
                   for entry in entries}
         payload = {
-            "squad": ["리타", "크라운", names[0], names[1]], "customCharacters": custom,
+            "squad": ["리타", "크라운", *names, "test_B3"], "customCharacters": custom,
             "duration": 60, "enemyDef": 31_784, "enemyCode": "",
             "corePx": 0, "hasParts": False, "seed": 42,
         }
@@ -951,6 +1044,75 @@ class BrowserBridgeTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "스쿼드에 없는 캐릭터"):
             run_request(json.dumps(payload, ensure_ascii=False))
+
+
+
+class GuiltyBunnyReleasedBridgeTest(unittest.TestCase):
+    NAME = "길티 : 마이티 바니"
+
+    def payload(self, mode=None):
+        result = {"squad": [self.NAME], "duration": 8, "enemyDef": 31_784,
+                  "enemyCode": "", "corePx": 0, "hasParts": False, "seed": 42}
+        if mode is not None:
+            result["characters"] = {self.NAME: {"control": {"bunny_mode": mode}}}
+        return result
+
+    def test_default_engage_and_selected_stance_use_released_data(self):
+        default = json.loads(run_request(json.dumps(self.payload(), ensure_ascii=False)))
+        stance = json.loads(run_request(json.dumps(self.payload("stance"), ensure_ascii=False)))
+        engage = json.loads(run_request(json.dumps(self.payload("engage"), ensure_ascii=False)))
+        self.assertEqual(default["charTotals"], engage["charTotals"])
+        self.assertGreater(engage["charTotals"][self.NAME], 0)
+        self.assertNotEqual(stance["charTotals"], engage["charTotals"])
+        self.assertFalse(engage.get("previewNote"))
+
+    def test_invalid_mode_is_rejected(self):
+        with self.assertRaises(ValueError):
+            run_request(json.dumps(self.payload("both"), ensure_ascii=False))
+
+    def test_all_released_skill_levels_run_and_change_damage(self):
+        totals = []
+        for level in range(1, 11):
+            payload = self.payload("stance")
+            payload["characters"][self.NAME]["skillLevels"] = dict.fromkeys(("1", "2", "3"), level)
+            result = json.loads(run_request(json.dumps(payload, ensure_ascii=False)))
+            self.assertFalse(result.get("previewNote"))
+            totals.append(result["charTotals"][self.NAME])
+        self.assertTrue(all(b > a > 0 for a, b in zip(totals, totals[1:])))
+
+
+class SinBunnyReleasedBridgeTest(GuiltyBunnyReleasedBridgeTest):
+    NAME = "신 : 스위프트 바니"
+
+
+
+class BurstGaugeBridgeTest(unittest.TestCase):
+    """버스트 게이지 방식 — 안 주면 신 방식(실누적), legacy면 종전 고정 시간. 타임라인에 게이지가 실린다."""
+
+    PAYLOAD = {"squad": ["크라운", "루주", "치사토"], "duration": 40, "enemyDef": 0, "enemyCode": "",
+               "corePx": 0, "hasParts": False, "seed": 42, "rngMode": "expected", "firstBurstTime": 3}
+
+    def test_new_is_default_and_legacy_keeps_fixed_timing(self):
+        new = json.loads(run_request(json.dumps(self.PAYLOAD)))
+        explicit = json.loads(run_request(json.dumps({**self.PAYLOAD, "burstGaugeMode": "new"})))
+        legacy = json.loads(run_request(json.dumps({**self.PAYLOAD, "burstGaugeMode": "legacy"})))
+        self.assertEqual(new["squadTotal"], explicit["squadTotal"])
+        # 구 방식은 첫 버스트 시간(3초) + 반응·전환 딜레이에 시작한다. 신 방식은 게이지가 정한다.
+        self.assertAlmostEqual(legacy["timeline"]["fullBurst"][0][0], 3.4, delta=0.3)
+        self.assertGreater(abs(new["timeline"]["fullBurst"][0][0] - legacy["timeline"]["fullBurst"][0][0]), 0.5)
+        for result in (new, legacy):
+            gauge = result["timeline"]["gauge"]
+            self.assertEqual(len(gauge), result["timeline"]["buckets"])
+            self.assertTrue(all(0 <= v <= 100 for v in gauge))
+        # 신 방식은 만충(100)에 닿아야 1단계다 — 칸 끝 값이라 같은 칸에서 차고 비면 100 아래로 보이지만,
+        # 높이 올랐다가 **뚝 떨어지는 칸**(소모)이 있어야 한다. 구 방식은 고정 시간에 진입해 소모하므로
+        # 그만큼 못 오른다.
+        gauge = new["timeline"]["gauge"]
+        self.assertGreaterEqual(max(gauge), 80)
+        self.assertTrue(any(gauge[i] < gauge[i - 1] - 50 for i in range(1, len(gauge))), gauge)
+        self.assertLess(max(legacy["timeline"]["gauge"]), max(gauge))
+        with self.assertRaises(ValueError):
+            run_request(json.dumps({**self.PAYLOAD, "burstGaugeMode": "old"}))
 
 
 if __name__ == "__main__":

@@ -2781,7 +2781,7 @@
           "gauge_above:MP:1"
         ]
       },
-      "target": "allies_code:전격",
+      "target": "allies_code_excl_self:전격",
       "stat": "element_bonus_pct",
       "polarity": "beneficial",
       "values": {
@@ -2810,7 +2810,7 @@
           "gauge_above:MP:1"
         ]
       },
-      "target": "allies_code:전격",
+      "target": "allies_code_excl_self:전격",
       "stat": "atk_caster_based_pct",
       "polarity": "beneficial",
       "values": {
@@ -17816,7 +17816,7 @@
     },
     {
       "source": "스킬1",
-      "type": "buff",
+      "type": "instant",
       "name": "피튜니아 3",
       "trigger": {
         "timing": [
@@ -17825,11 +17825,8 @@
         "condition": []
       },
       "target": "allies_code:전격",
-      "stat": "buff_max_stack_add",
-      "polarity": "beneficial",
-      "max_stack": 1,
-      "fixed_value": 1,
-      "duration": -1
+      "stat": "buff_stack_add",
+      "fixed_value": 1
     },
     {
       "source": "스킬1",
@@ -17880,7 +17877,7 @@
     {
       "source": "스킬1",
       "favorite": 1,
-      "type": "buff",
+      "type": "instant",
       "name": "피튜니아 2",
       "trigger": {
         "timing": [
@@ -17889,11 +17886,8 @@
         "condition": []
       },
       "target": "allies_code:전격",
-      "stat": "buff_max_stack_add",
-      "polarity": "beneficial",
-      "max_stack": 1,
-      "fixed_value": 1,
-      "duration": -1
+      "stat": "buff_stack_add",
+      "fixed_value": 1
     },
     {
       "source": "스킬1",
@@ -21642,8 +21636,8 @@
         26
       ],
       "feather_interval_base": 8,
-      "feather_interval_mult": 0.84,
-      "note": "니어 페더 소환체. 지속시간·공격 주기는 게임 내 스킬 텍스트에 없다 — 커뮤니티 자료 기반 추정치이며 근거는 context/scenarios/아인.md §니어 페더 메커니즘. feather_slots는 슬롯별 지속시간(초, -1=무제한), 공격 주기는 feather_interval_base × feather_interval_mult^(생존수-1)."
+      "feather_interval_reduction_pct": 16,
+      "note": "니어 페더 소환체. 지속시간·공격 주기는 게임 내 스킬 텍스트에 없다 — 커뮤니티 자료 기반 추정치이며 근거는 context/scenarios/아인.md §니어 페더 메커니즘. feather_slots는 슬롯별 지속시간(초, -1=무제한), 공격 주기는 feather_interval_base × (1 - feather_interval_reduction_pct / 100 × (생존수-1)). 2026-09-20 주기 합연산 수정; 개별 발사·도착 지연은 미반영."
     },
     {
       "source": "스킬1",
@@ -21749,8 +21743,8 @@
         10
       ],
       "feather_interval_base": 8,
-      "feather_interval_mult": 0.84,
-      "note": "니어 페더 소환체. 지속시간·공격 주기는 게임 내 스킬 텍스트에 없다 — 커뮤니티 자료 기반 추정치이며 근거는 context/scenarios/아인.md §니어 페더 메커니즘. feather_slots는 슬롯별 지속시간(초, -1=무제한), 공격 주기는 feather_interval_base × feather_interval_mult^(생존수-1). 재소환이므로 기존 페더의 지속시간·공격 쿨을 모두 초기화한다."
+      "feather_interval_reduction_pct": 16,
+      "note": "니어 페더 소환체. 지속시간·공격 주기는 게임 내 스킬 텍스트에 없다 — 커뮤니티 자료 기반 추정치이며 근거는 context/scenarios/아인.md §니어 페더 메커니즘. feather_slots는 슬롯별 지속시간(초, -1=무제한), 공격 주기는 feather_interval_base × (1 - feather_interval_reduction_pct / 100 × (생존수-1)). 2026-09-20 주기 합연산 수정; 개별 발사·도착 지연은 미반영. 재소환이므로 기존 페더의 지속시간·공격 쿨을 모두 초기화한다."
     },
     {
       "source": "스킬3",
@@ -21980,7 +21974,8 @@
       "max_ammo": 1,
       "charge_time": 2,
       "full_charge_mult": 300,
-      "duration_bullets": 1
+      "duration_bullets": 1,
+      "refill_on_exit": true
     },
     {
       "source": "스킬3",
@@ -34742,9 +34737,11 @@
       "name": "경험치",
       "trigger": {
         "timing": [
-          "body_hit_count:6"
+          "hit_count:6"
         ],
-        "condition": []
+        "condition": [
+          "not_core"
+        ]
       },
       "target": "self",
       "stat": "atk_pct",
@@ -34762,7 +34759,8 @@
       },
       "duration": -1,
       "polarity": "beneficial",
-      "max_stack": 100
+      "max_stack": 100,
+      "stack_group": "경험치"
     },
     {
       "source": "스킬2",
@@ -34790,7 +34788,8 @@
       },
       "duration": -1,
       "polarity": "beneficial",
-      "max_stack": 100
+      "max_stack": 100,
+      "stack_group": "경험치"
     },
     {
       "source": "스킬2",
@@ -46261,6 +46260,672 @@
         "8": 1216.69,
         "9": 1283.36,
         "10": 1350.0
+      }
+    }
+  ],
+  "길티 : 마이티 바니": [
+    {
+      "source": "스킬1",
+      "type": "buff",
+      "name": "어떻게 하는 게 좋아…?",
+      "trigger": {
+        "timing": [
+          "battle_start"
+        ],
+        "condition": []
+      },
+      "target": "self",
+      "stat": "atk_pct",
+      "values": {
+        "1": 11.88,
+        "2": 12.79,
+        "3": 13.7,
+        "4": 14.62,
+        "5": 15.53,
+        "6": 16.45,
+        "7": 17.36,
+        "8": 18.27,
+        "9": 19.19,
+        "10": 20.1
+      },
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": -1
+    },
+    {
+      "source": "스킬1",
+      "type": "instant",
+      "name": "바니 모드 초기화",
+      "trigger": {
+        "timing": [
+          "battle_start"
+        ],
+        "condition": []
+      },
+      "target": "self",
+      "stat": "bunny_mode_switch",
+      "mode": "stance",
+      "fixed_value": 0
+    },
+    {
+      "source": "스킬1",
+      "type": "instant",
+      "name": "바니 모드 전환",
+      "trigger": {
+        "timing": [
+          "charge_hold:1"
+        ],
+        "condition": [
+          "not_self_state:마이티 스톰프"
+        ]
+      },
+      "target": "self",
+      "stat": "bunny_mode_switch",
+      "mode": "toggle",
+      "fixed_value": 0
+    },
+    {
+      "source": "스킬2",
+      "type": "buff",
+      "name": "체인 릴리즈",
+      "trigger": {
+        "timing": [
+          "passive"
+        ],
+        "condition": [
+          "self_state:바니 모드 : 인게이지"
+        ]
+      },
+      "target": "self",
+      "stat": "armor_break_enabled",
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": -1,
+      "fixed_value": 1
+    },
+    {
+      "source": "스킬2",
+      "type": "damage",
+      "name": "체인 릴리즈 2",
+      "trigger": {
+        "timing": [
+          "full_charge_hit"
+        ],
+        "condition": [
+          "self_state:바니 모드 : 인게이지"
+        ]
+      },
+      "target": "target",
+      "stat": "armor_break_damage",
+      "values": {
+        "1": 218.68,
+        "2": 235.51,
+        "3": 252.33,
+        "4": 269.15,
+        "5": 285.97,
+        "6": 302.79,
+        "7": 319.61,
+        "8": 336.44,
+        "9": 353.26,
+        "10": 370.08
+      }
+    },
+    {
+      "source": "스킬2",
+      "type": "buff",
+      "name": "체인 인헨스",
+      "trigger": {
+        "timing": [
+          "passive"
+        ],
+        "condition": [
+          "self_state:바니 모드 : 스탠스"
+        ]
+      },
+      "target": "self",
+      "stat": "atk_dmg_pct",
+      "values": {
+        "1": 12.08,
+        "2": 13.01,
+        "3": 13.94,
+        "4": 14.87,
+        "5": 15.8,
+        "6": 16.73,
+        "7": 17.66,
+        "8": 18.59,
+        "9": 19.52,
+        "10": 20.45
+      },
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": -1
+    },
+    {
+      "source": "스킬2",
+      "type": "buff",
+      "name": "체인 인헨스 2",
+      "trigger": {
+        "timing": [
+          "passive"
+        ],
+        "condition": [
+          "self_state:바니 모드 : 스탠스"
+        ]
+      },
+      "target": "self",
+      "stat": "charge_dmg_pct",
+      "values": {
+        "1": 23.64,
+        "2": 25.45,
+        "3": 27.27,
+        "4": 29.09,
+        "5": 30.91,
+        "6": 32.73,
+        "7": 34.55,
+        "8": 36.36,
+        "9": 38.18,
+        "10": 40.0
+      },
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": -1
+    },
+    {
+      "source": "스킬2",
+      "type": "damage",
+      "name": "체인 인헨스 3",
+      "trigger": {
+        "timing": [
+          "full_charge_hit"
+        ],
+        "condition": [
+          "self_state:바니 모드 : 스탠스"
+        ]
+      },
+      "target": "target",
+      "stat": "bonus_damage",
+      "values": {
+        "1": 266.44,
+        "2": 286.93,
+        "3": 307.43,
+        "4": 327.92,
+        "5": 348.42,
+        "6": 368.91,
+        "7": 389.41,
+        "8": 409.9,
+        "9": 430.4,
+        "10": 450.89
+      }
+    },
+    {
+      "source": "스킬3",
+      "type": "weapon_change",
+      "name": "마이티 스톰프",
+      "trigger": {
+        "timing": [
+          "burst_cast"
+        ],
+        "condition": []
+      },
+      "target": "self",
+      "weapon_type": "SR",
+      "damage_coeff": {
+        "1": 61.3,
+        "2": 65.74,
+        "3": 70.19,
+        "4": 74.63,
+        "5": 79.08,
+        "6": 83.52,
+        "7": 87.97,
+        "8": 92.41,
+        "9": 96.86,
+        "10": 101.3
+      },
+      "max_ammo": 1,
+      "charge_time": 1.5,
+      "full_charge_mult": 250,
+      "duration_bullets": 1,
+      "fixed_bullets": true,
+      "refill_on_exit": true
+    },
+    {
+      "source": "스킬3",
+      "type": "buff",
+      "name": "마이티 스톰프 고정 차지",
+      "trigger": {
+        "timing": [
+          "burst_cast"
+        ],
+        "condition": [
+          "self_state:마이티 스톰프"
+        ]
+      },
+      "target": "self",
+      "stat": "charge_time_fixed",
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": -1,
+      "duration_bullets": 1,
+      "fixed_value": 1.5
+    },
+    {
+      "source": "스킬3",
+      "type": "buff",
+      "name": "드디어 풀려났어…!",
+      "trigger": {
+        "timing": [
+          "burst_cast"
+        ],
+        "condition": []
+      },
+      "target": "self",
+      "stat": "charge_dmg_pct",
+      "values": {
+        "1": 827.27,
+        "2": 890.91,
+        "3": 954.55,
+        "4": 1018.18,
+        "5": 1081.82,
+        "6": 1145.45,
+        "7": 1209.09,
+        "8": 1272.73,
+        "9": 1336.36,
+        "10": 1400.0
+      },
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": -1,
+      "duration_bullets": 1
+    },
+    {
+      "source": "스킬3",
+      "type": "buff",
+      "name": "드디어 풀려났어…! 2",
+      "trigger": {
+        "timing": [
+          "burst_cast"
+        ],
+        "condition": []
+      },
+      "target": "self",
+      "stat": "atk_dmg_pct",
+      "values": {
+        "1": 45.71,
+        "2": 49.22,
+        "3": 52.74,
+        "4": 56.25,
+        "5": 59.77,
+        "6": 63.29,
+        "7": 66.8,
+        "8": 70.32,
+        "9": 73.83,
+        "10": 77.35
+      },
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": 10
+    }
+  ],
+  "신 : 스위프트 바니": [
+    {
+      "source": "스킬1",
+      "type": "buff",
+      "name": "바니 시프트",
+      "trigger": {
+        "timing": [
+          "battle_start"
+        ],
+        "condition": []
+      },
+      "target": "self",
+      "stat": "atk_pct",
+      "values": {
+        "1": 9.07,
+        "2": 9.77,
+        "3": 10.47,
+        "4": 11.16,
+        "5": 11.86,
+        "6": 12.56,
+        "7": 13.26,
+        "8": 13.95,
+        "9": 14.65,
+        "10": 15.35
+      },
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": -1
+    },
+    {
+      "source": "스킬1",
+      "type": "buff",
+      "name": "바니 시프트 2",
+      "trigger": {
+        "timing": [
+          "full_charge"
+        ],
+        "condition": [
+          "not_self_state:스위프트 피어싱"
+        ]
+      },
+      "target": "self",
+      "stat": "normal_atk_dmg_pct",
+      "values": {
+        "1": 59.09,
+        "2": 63.64,
+        "3": 68.18,
+        "4": 72.73,
+        "5": 77.27,
+        "6": 81.82,
+        "7": 86.36,
+        "8": 90.91,
+        "9": 95.45,
+        "10": 100.0
+      },
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": -1,
+      "duration_bullets": 1
+    },
+    {
+      "source": "스킬1",
+      "type": "buff",
+      "name": "바니 시프트 3",
+      "trigger": {
+        "timing": [
+          "full_charge"
+        ],
+        "condition": [
+          "not_self_state:스위프트 피어싱"
+        ]
+      },
+      "target": "self",
+      "stat": "charge_dmg_pct",
+      "values": {
+        "1": 30.8,
+        "2": 33.17,
+        "3": 35.54,
+        "4": 37.91,
+        "5": 40.27,
+        "6": 42.64,
+        "7": 45.01,
+        "8": 47.38,
+        "9": 49.75,
+        "10": 52.12
+      },
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": -1,
+      "duration_bullets": 1
+    },
+    {
+      "source": "스킬1",
+      "type": "instant",
+      "name": "바니 모드 초기화",
+      "trigger": {
+        "timing": [
+          "battle_start"
+        ],
+        "condition": []
+      },
+      "target": "self",
+      "stat": "bunny_mode_switch",
+      "mode": "stance",
+      "fixed_value": 0
+    },
+    {
+      "source": "스킬1",
+      "type": "instant",
+      "name": "바니 모드 전환",
+      "trigger": {
+        "timing": [
+          "charge_hold:1"
+        ],
+        "condition": []
+      },
+      "target": "self",
+      "stat": "bunny_mode_switch",
+      "mode": "toggle",
+      "fixed_value": 0
+    },
+    {
+      "source": "스킬2",
+      "type": "buff",
+      "name": "노이즈 불렛",
+      "trigger": {
+        "timing": [
+          "passive"
+        ],
+        "condition": [
+          "self_state:바니 모드 : 인게이지"
+        ]
+      },
+      "target": "self",
+      "stat": "armor_break_enabled",
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": -1,
+      "fixed_value": 1
+    },
+    {
+      "source": "스킬2",
+      "type": "buff",
+      "name": "인헨스 불렛",
+      "trigger": {
+        "timing": [
+          "passive"
+        ],
+        "condition": [
+          "self_state:바니 모드 : 스탠스"
+        ]
+      },
+      "target": "self",
+      "stat": "crit_rate",
+      "values": {
+        "1": 20.76,
+        "2": 22.36,
+        "3": 23.96,
+        "4": 25.56,
+        "5": 27.15,
+        "6": 28.75,
+        "7": 30.35,
+        "8": 31.95,
+        "9": 33.54,
+        "10": 35.14
+      },
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": -1
+    },
+    {
+      "source": "스킬2",
+      "type": "buff",
+      "name": "인헨스 불렛 2",
+      "trigger": {
+        "timing": [
+          "passive"
+        ],
+        "condition": [
+          "self_state:바니 모드 : 스탠스"
+        ]
+      },
+      "target": "self",
+      "stat": "crit_dmg",
+      "values": {
+        "1": 44.39,
+        "2": 47.8,
+        "3": 51.22,
+        "4": 54.63,
+        "5": 58.05,
+        "6": 61.46,
+        "7": 64.88,
+        "8": 68.29,
+        "9": 71.71,
+        "10": 75.12
+      },
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": -1
+    },
+    {
+      "source": "스킬2",
+      "type": "weapon_change",
+      "name": "스위프트 피어싱",
+      "trigger": {
+        "timing": [
+          "burst_cast"
+        ],
+        "condition": []
+      },
+      "target": "self",
+      "weapon_type": "SR",
+      "damage_coeff": {
+        "1": 43.27,
+        "2": 46.59,
+        "3": 49.92,
+        "4": 53.25,
+        "5": 56.58,
+        "6": 59.91,
+        "7": 63.24,
+        "8": 66.56,
+        "9": 69.89,
+        "10": 73.22
+      },
+      "max_ammo": 10,
+      "reload_time": 2,
+      "charge_time": 0.5,
+      "full_charge_mult": 300,
+      "duration": 5,
+      "fresh_charge": true,
+      "refill_on_exit": true,
+      "duration_bullets": 10,
+      "fixed_bullets": true,
+      "continuous_charge": true,
+      "post_fire_delay": 0
+    },
+    {
+      "source": "스킬2",
+      "type": "buff",
+      "name": "스위프트 피어싱 고정 차지",
+      "trigger": {
+        "timing": [
+          "burst_cast"
+        ],
+        "condition": [
+          "self_state:스위프트 피어싱"
+        ]
+      },
+      "target": "self",
+      "stat": "charge_time_fixed",
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": 5,
+      "fixed_value": 0.5
+    },
+    {
+      "source": "스킬3",
+      "type": "buff",
+      "name": "스위프트 피어싱 2",
+      "trigger": {
+        "timing": [
+          "burst_cast"
+        ],
+        "condition": []
+      },
+      "target": "self",
+      "stat": "atk_pct",
+      "values": {
+        "1": 65.0,
+        "2": 70.0,
+        "3": 75.0,
+        "4": 80.0,
+        "5": 85.0,
+        "6": 90.0,
+        "7": 95.0,
+        "8": 100.0,
+        "9": 105.0,
+        "10": 110.0
+      },
+      "polarity": "beneficial",
+      "max_stack": 1,
+      "duration": 5
+    },
+    {
+      "source": "스킬3",
+      "type": "damage",
+      "name": "스위프트 피어싱 3",
+      "trigger": {
+        "timing": [
+          "burst_cast"
+        ],
+        "condition": []
+      },
+      "target": "all_enemies",
+      "stat": "burst_damage",
+      "values": {
+        "1": 305.26,
+        "2": 328.75,
+        "3": 352.23,
+        "4": 375.71,
+        "5": 399.19,
+        "6": 422.67,
+        "7": 446.15,
+        "8": 469.64,
+        "9": 493.12,
+        "10": 516.6
+      }
+    },
+    {
+      "source": "스킬3",
+      "type": "damage",
+      "name": "스위프트 피어싱 4",
+      "trigger": {
+        "timing": [
+          "burst_cast"
+        ],
+        "condition": [
+          "self_state:바니 모드 : 스탠스"
+        ]
+      },
+      "target": "all_enemies",
+      "stat": "bonus_damage",
+      "values": {
+        "1": 566.62,
+        "2": 610.21,
+        "3": 653.8,
+        "4": 697.38,
+        "5": 740.97,
+        "6": 784.55,
+        "7": 828.14,
+        "8": 871.73,
+        "9": 915.31,
+        "10": 958.9
+      }
+    },
+    {
+      "source": "스킬3",
+      "type": "damage",
+      "name": "스위프트 피어싱 5",
+      "trigger": {
+        "timing": [
+          "burst_cast"
+        ],
+        "condition": [
+          "self_state:바니 모드 : 인게이지"
+        ]
+      },
+      "target": "all_enemies",
+      "stat": "armor_break_damage",
+      "values": {
+        "1": 504.99,
+        "2": 543.84,
+        "3": 582.68,
+        "4": 621.53,
+        "5": 660.37,
+        "6": 699.22,
+        "7": 738.06,
+        "8": 776.91,
+        "9": 815.75,
+        "10": 854.6
       }
     }
   ]

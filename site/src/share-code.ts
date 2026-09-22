@@ -282,12 +282,17 @@ const BATTLE_DEFAULTS: BattleShare = {
   seed: 42,
   optimalRangeWeapons: [],
   normalHitCoeff: {},
+  coreWindows: [],
+  optimalRangeWindows: [],
+  defenseRateWindows: [],
   immuneWindows: [],
   elementWindows: [],
   rngMode: 'expected',
   immuneBlocksBurst: true,
   burstRegenTime: 2,
+  burstGaugeMode: 'new',
   burstReaction: 0.05,
+  firstBurstTime: 0,
 };
 
 const num = (value: unknown, min: number, max: number, fallback: number): number => {
@@ -323,7 +328,16 @@ export function encodeBattleCode(
   put('rm', battle.rngMode === 'random' ? 1 : 0, 0);
   put('ib', battle.immuneBlocksBurst ? 1 : 0, 1);
   put('br', toTenth(battle.burstRegenTime), toTenth(d.burstRegenTime));
+  // 게이지 방식은 구 방식일 때만 실린다 — 없으면 신 방식. 옛 코드가 전부 신 방식으로 읽히는 이유다.
+  put('gm', battle.burstGaugeMode === 'legacy' ? 1 : 0, 0);
   // 반응속도는 0.05초 단위라 10분의 1로는 담기지 않는다 — 100분의 1로 싣는다.
+  put('sh', Math.round((battle.shotgunHitRate ?? 1) * 10000), 10000);
+  put('sm', battle.shotgunModel ?? 'legacy', 'legacy');
+  put('sw', (battle.shotgunSizeWindows ?? []).map(w => [toTenth(w.from), toTenth(w.to), w.diameter]), []);
+  put('sd', battle.shotgunTargetDiameter ?? 360, 360);
+  put('bs', battle.bossSize ?? 'large', 'large');
+  put('fb', toTenth(battle.firstBurstTime ?? 0), 0);
+  put('fd', Object.fromEntries(Object.entries(battle.firstBurstPerDeck ?? {}).map(([id, value]) => [id, toTenth(value)])), {});
   put('rt', toHundredth(battle.burstReaction), toHundredth(d.burstReaction));
 
   // 평타 계수는 **기본값과 다른 무기군만** 싣는다. 여섯 개를 다 실으면 그것만으로
@@ -335,6 +349,9 @@ export function encodeBattleCode(
   }
   put('hc', coeff, {});
 
+  put('dw', (battle.defenseRateWindows ?? []).map((w) => [toTenth(w.from), toTenth(w.to), w.rate]), []);
+  put('rw', (battle.optimalRangeWindows ?? []).map(w => [toTenth(w.from), toTenth(w.to), w.weapons]), []);
+  put('cw', (battle.coreWindows ?? []).map((w) => [toTenth(w.from), toTenth(w.to)]), []);
   put('iw', (battle.immuneWindows ?? []).map((w) => [toTenth(w.from), toTenth(w.to)]), []);
   put('ew', (battle.elementWindows ?? []).map(
     (w) => [toTenth(w.from), toTenth(w.to), Math.max(1, CODES.indexOf(w.code))]), []);
@@ -399,12 +416,32 @@ export function decodeBattleCode(code: string): BattleShare {
       ? (raw.or as unknown[]).filter((w): w is string => typeof w === 'string')
       : [],
     normalHitCoeff: coeff,
+    defenseRateWindows: Array.isArray(raw.dw) ? raw.dw.slice(0, 100).flatMap((item: unknown) => {
+      if (!Array.isArray(item)) return [];
+      const window = windowsOf([item], false)[0];
+      const rate = item[2] === undefined ? 60 : item[2];
+      return window && typeof rate === 'number' && Number.isFinite(rate) && rate >= 0 && rate <= 100
+        ? [{ ...window, rate }] : [];
+    }) : [],
+    optimalRangeWindows: Array.isArray(raw.rw) ? raw.rw.slice(0, 100).flatMap((item: unknown) => {
+      if (!Array.isArray(item) || !Array.isArray(item[2])) return [];
+      const window = windowsOf([item], false)[0];
+      return window ? [{ ...window, weapons: item[2].filter((w): w is string => typeof w === 'string' && ['AR', 'SMG', 'SG', 'MG', 'SR'].includes(w)) }] : [];
+    }) : [],
+    coreWindows: windowsOf(raw.cw, false) as PhaseWindow[],
     immuneWindows: windowsOf(raw.iw, false) as PhaseWindow[],
     elementWindows: windowsOf(raw.ew, true) as ElementWindow[],
     rngMode: raw.rm ? 'random' : 'expected',
     immuneBlocksBurst: raw.ib === undefined ? d.immuneBlocksBurst : Boolean(raw.ib),
     burstRegenTime: fromTenth(num(raw.br, 0, 200, toTenth(d.burstRegenTime))),
+    burstGaugeMode: raw.gm ? 'legacy' : 'new',
     // 없는 키는 기본값이 된다 — 이 항목이 생기기 전에 만들어진 코드는 0.05초로 읽힌다.
+    ...(['spatial-v1', 'spatial-convergence-v1'].includes(String(raw.sm)) ? { shotgunModel: raw.sm as BattleSettings['shotgunModel'], shotgunTargetDiameter: num(raw.sd, 1, 2000, 360) } : {}),
+    ...(Array.isArray(raw.sw) ? { shotgunSizeWindows: raw.sw.slice(0, 100).filter((w: unknown) => Array.isArray(w) && w.length === 3).map((w: number[]) => ({ from: fromTenth(num(w[0], 0, 1800, 0)), to: fromTenth(num(w[1], 0, 1800, 0)), diameter: num(w[2], 1, 2000, 360) })) } : {}),
+    shotgunHitRate: num(raw.sh, 0, 10000, 10000) / 10000,
+    bossSize: ['large', 'medium', 'small', 'custom'].includes(String(raw.bs)) ? raw.bs as BattleSettings['bossSize'] : 'large',
+    firstBurstTime: fromTenth(num(raw.fb, 0, 36000, 0)),
+    ...(raw.fd && typeof raw.fd === 'object' && !Array.isArray(raw.fd) ? { firstBurstPerDeck: Object.fromEntries(Object.entries(raw.fd).filter(([id]) => /^[1-9][0-9]*$/.test(id)).map(([id, value]) => [id, fromTenth(num(value, 0, 36000, 0))])) } : {}),
     burstReaction: fromHundredth(num(raw.rt, 0, 300, toHundredth(d.burstReaction))),
   };
 }

@@ -22,6 +22,13 @@ const valid: SimulationRequest = {
   seed: 42,
 };
 
+it('validates and separates first burst times in calculation caches', () => {
+  expect(normalizeRequest(valid).firstBurstTime).toBe(0);
+  expect(cacheKey({ ...valid, firstBurstTime: 0 }, 'v')).not.toBe(cacheKey({ ...valid, firstBurstTime: 5 }, 'v'));
+  expect(validateRequest({ ...valid, firstBurstTime: -1 })).toContain('첫 버스트 시간은 0~3600초여야 합니다.');
+  expect(requestForDeck({ id: 3, squad: ['리타'], characters: {} }, { ...battle, firstBurstTime: 1, firstBurstPerDeck: { 3: 5 } }).firstBurstTime).toBe(5);
+});
+
 const battle: BattleSettings = {
   synchroLevel: 400,
   burstRegenTime: 2,
@@ -91,8 +98,11 @@ describe('request normalization', () => {
       enemyDef: 31_784,
       corePx: 4,
       seed: 42,
+      // 게이지 방식은 언제나 실린다 — 없으면 신 방식.
+      burstGaugeMode: 'new',
       // 난수 모드는 기본값이어도 언제나 실린다 — 브리지와 기본값이 어긋나지 않게.
       rngMode: 'expected',
+      firstBurstTime: 0,
     });
   });
 
@@ -284,7 +294,7 @@ describe('multi-deck model', () => {
       .toEqual({ '1': 7, '2': 9, '3': 10 });
   });
 
-  it('resets enemy values without changing battle duration or seed', () => {
+  it('resets enemy values and phases without changing battle duration or seed', () => {
     expect(resetEnemy({
       ...battle,
       duration: 60,
@@ -294,10 +304,19 @@ describe('multi-deck model', () => {
       coreEnabled: true,
       corePx: 77,
       hasParts: true,
+      corePerDeck: { 1: true },
+      coreWindows: [{ from: 10, to: 20 }],
+      defenseRateWindows: [{ from: 0, to: 20, rate: 60 }],
+      immuneWindows: [{ from: 20, to: 30 }],
+      elementWindows: [{ from: 30, to: 40, code: '작열' }],
+      optimalRangeWeapons: ['AR'],
+      optimalRangeWindows: [{ from: 0, to: 40, weapons: ['SR'] }],
     })).toEqual({
       ...battle,
       duration: 60,
       seed: 99,
+      bossSize: 'large', shotgunHitRate: 1,
+      corePerDeck: {}, optimalRangeWeapons: [], optimalRangeWindows: [], shotgunSizeWindows: [], coreWindows: [], defenseRateWindows: [], immuneWindows: [], elementWindows: [],
     });
   });
 
@@ -422,4 +441,88 @@ describe('핵', () => {
     });
     expect(cacheKey(hacked, 'v1')).not.toBe(cacheKey(plain, 'v1'));
   });
+});
+
+
+describe('core exposure windows', () => {
+  const coreWindows = [{ from: 30, to: 60 }, { from: 90, to: 120 }];
+  it('validates windows and makes their order irrelevant to cache identity', () => {
+    expect(validateRequest({ ...valid, coreWindows })).toEqual([]);
+    expect(validateRequest({ ...valid, coreWindows: [{ from: 60, to: 30 }] })).toContain(
+      '코어 노출 구간은 시작이 끝보다 앞서야 합니다 (60~30).');
+    expect(validateRequest({ ...valid, coreWindows: [{ from: 0, to: Infinity }] })).toContain(
+      '코어 노출 구간은 0~180초여야 합니다.');
+    expect(cacheKey({ ...valid, coreWindows }, 'v1')).toBe(cacheKey({ ...valid, coreWindows: [...coreWindows].reverse() }, 'v1'));
+    expect(cacheKey({ ...valid, coreWindows }, 'v1')).not.toBe(cacheKey(valid, 'v1'));
+    expect(cacheKey({ ...valid, coreWindows: [] }, 'v1')).toBe(cacheKey(valid, 'v1'));
+  });
+  it('carries intervals while preserving disabled core and per-deck overrides', () => {
+    const settings = { ...battle, coreWindows, coreEnabled: true };
+    expect(requestForDeck(deck(1, ['리타']), settings)).toMatchObject({ coreWindows, corePx: 52 });
+    expect(requestForDeck(deck(1, ['리타']), { ...settings, coreEnabled: false }).corePx).toBe(0);
+    expect(requestForDeck(deck(1, ['리타']), { ...settings, corePerDeck: { 1: false } }).corePx).toBe(0);
+  });
+});
+
+
+describe('body defense rate windows', () => {
+  const defenseRateWindows = [{ from: 30, to: 60, rate: 60 }, { from: 40, to: 70, rate: 75 }];
+  it('validates times and finite percentages, preserving overlapping windows', () => {
+    expect(validateRequest({ ...valid, defenseRateWindows })).toEqual([]);
+    for (const rate of [-1, 101, Infinity, NaN]) {
+      expect(validateRequest({ ...valid, defenseRateWindows: [{ from: 0, to: 30, rate }] }))
+        .toContain('바디 방어율은 0~100%여야 합니다.');
+    }
+    expect(validateRequest({ ...valid, defenseRateWindows: [{ from: 60, to: 30, rate: 60 }] }))
+      .toContain('바디 방어율 구간은 시작이 끝보다 앞서야 합니다 (60~30).');
+    expect(validateRequest({ ...valid, defenseRateWindows: [{ from: 0, to: Infinity, rate: 60 }] }))
+      .toContain('바디 방어율 구간은 0~180초여야 합니다.');
+  });
+  it('includes rates in cache identity, ignoring order and empty windows', () => {
+    const key = cacheKey({ ...valid, defenseRateWindows }, 'v1');
+    expect(key).toBe(cacheKey({ ...valid, defenseRateWindows: [...defenseRateWindows].reverse() }, 'v1'));
+    expect(key).not.toBe(cacheKey(valid, 'v1'));
+    expect(key).not.toBe(cacheKey({ ...valid, defenseRateWindows: [{ ...defenseRateWindows[0]!, rate: 50 }, defenseRateWindows[1]!] }, 'v1'));
+    expect(cacheKey({ ...valid, defenseRateWindows: [] }, 'v1')).toBe(cacheKey(valid, 'v1'));
+    expect(requestForDeck(deck(1, ['리타']), { ...battle, defenseRateWindows })).toMatchObject({ defenseRateWindows });
+  });
+});
+
+
+describe('optimal range windows', () => {
+  const optimalRangeWindows = [{ from: 30, to: 60, weapons: ['AR', 'SR'] }, { from: 90, to: 100, weapons: [] }];
+  it('validates and forwards time-based range overrides including no bonus windows', () => {
+    expect(validateRequest({ ...valid, optimalRangeWindows })).toEqual([]);
+    expect(validateRequest({ ...valid, optimalRangeWindows: [{ from: 30, to: 10, weapons: [] }] })).toContain('유효 사거리 구간은 시작이 끝보다 앞서야 합니다 (30~10).');
+    expect(validateRequest({ ...valid, optimalRangeWindows: [{ from: 0, to: 10, weapons: ['BAD'] }] })).toContain('유효 사거리 구간의 무기군을 확인해 주세요.');
+    expect(requestForDeck(deck(1, ['리타']), { ...battle, optimalRangeWindows }).optimalRangeWindows).toEqual(optimalRangeWindows);
+    expect(cacheKey({ ...valid, optimalRangeWindows }, 'v1')).not.toBe(cacheKey(valid, 'v1'));
+    expect(cacheKey({ ...valid, optimalRangeWindows }, 'v1')).toBe(cacheKey({ ...valid, optimalRangeWindows: [...optimalRangeWindows].reverse() }, 'v1'));
+  });
+});
+
+it('passes shotgun probability through cache and deck requests', () => {
+  expect(normalizeRequest({ ...valid, shotgunHitRate: .8 }).shotgunHitRate).toBe(.8);
+  expect(cacheKey({ ...valid, shotgunHitRate: .8 }, 'v')).not.toBe(cacheKey(valid, 'v'));
+  expect(requestForDeck({ id: 1, squad: ['리타'], characters: {} }, { ...battle, shotgunHitRate: .9 }).shotgunHitRate).toBe(.9);
+  expect(validateRequest({ ...valid, shotgunHitRate: 1.1 }).length).toBeGreaterThan(0);
+  expect(resetEnemy({ ...battle, shotgunHitRate: .8 }).shotgunHitRate).toBe(1);
+});
+
+it('preserves spatial shotgun settings and separates cached models', () => {
+  const changed = { ...valid, shotgunModel: 'spatial-v1' as const, shotgunTargetDiameter: 120 };
+  expect(normalizeRequest(changed)).toMatchObject({ shotgunModel: 'spatial-v1', shotgunTargetDiameter: 120 });
+  expect(cacheKey(changed, 'v')).not.toBe(cacheKey(valid, 'v'));
+  expect(requestForDeck({ id: 1, squad: ['리타'], characters: {} }, { ...battle, shotgunModel: 'spatial-v1', shotgunTargetDiameter: 120 })).toMatchObject({ shotgunModel: 'spatial-v1', shotgunTargetDiameter: 120 });
+  expect(validateRequest({ ...changed, shotgunTargetDiameter: -1 }).length).toBeGreaterThan(0);
+});
+
+it('passes and validates size intervals without altering old defaults', () => {
+  const shotgunSizeWindows = [{ from: 3, to: 6, diameter: 120 }];
+  const request = { ...valid, shotgunSizeWindows };
+  expect(normalizeRequest(request).shotgunSizeWindows).toEqual(shotgunSizeWindows);
+  expect(requestForDeck({ id: 1, squad: ['리타'], characters: {} }, { ...battle, shotgunSizeWindows }).shotgunSizeWindows).toEqual(shotgunSizeWindows);
+  expect(resetEnemy({ ...battle, shotgunSizeWindows }).shotgunSizeWindows).toEqual([]);
+  expect(validateRequest({ ...request, shotgunSizeWindows: [...shotgunSizeWindows, ...shotgunSizeWindows] })).toContain('보스 크기 구간은 서로 겹칠 수 없습니다.');
+  expect(cacheKey(request, 'v')).not.toBe(cacheKey(valid, 'v'));
 });

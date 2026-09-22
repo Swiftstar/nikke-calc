@@ -29,7 +29,7 @@
  * 곳에 집중»으로 본다 — 실제보다 코어 적중이 후하게 잡히는 쪽이며, 화면에 그렇게 적는다.
  */
 
-import { fromBase64Url, nameHash, toBase64Url } from './share-code';
+import { decodeBattleCode, fromBase64Url, nameHash, toBase64Url } from './share-code';
 import type { ElementCode } from './types';
 
 export type ShapeKind = 'circle' | 'rect' | 'triangle';
@@ -169,6 +169,10 @@ export interface BossImage {
 }
 
 export interface BossDesign {
+  /** Select whether drawing-derived geometry overrides common battle inputs. */
+  settingsSource?: 'drawing' | 'battle';
+  /** Public battle conditions only; excludes account growth and cheats. */
+  battleCode?: string;
   version: 1;
   /** 저장본을 가르는 열쇠. 이름은 겹쳐도 되지만 이것은 겹치지 않는다 */
   id: string;
@@ -412,8 +416,8 @@ function randomFrom(seed: number): () => number {
  * 찍힌 점이 코어 안에 드는 비율이 엔진이 쓰는 확률과 **정확히 맞는다**. 눈으로 세어도
  * 계산과 어긋나지 않는다는 뜻이다.
  *
- * n이 2보다 크므로 점은 넓이 기준으로 봐도 가운데에 몰린다 — 작은 코어가 생각보다
- * 자주 맞는 이유가 이 쏠림이다.
+ * n이 2보다 크므로 면적 균등 분포보다 바깥쪽에 무게가 실린다.
+ * 이는 기존 계산기의 추정 분포이며 실측 확정 분포는 아니다.
  *
  * 씨앗은 «누가·언제»로 짓는다. 같은 사격은 다시 그려도 같은 자리에 박혀야 한다 —
  * 프레임마다 새로 뽑으면 재생할 때 점들이 부글거린다.
@@ -764,6 +768,7 @@ function reviveDesign(value: unknown): BossDesign | null {
     version: 1,
     // 옛 저장본에는 id가 없다 — 그때는 새로 붙인다.
     id: typeof saved.id === 'string' && saved.id ? saved.id : base.id,
+    settingsSource: saved.settingsSource === 'battle' ? 'battle' : 'drawing',
     canvas: saved.canvas ?? base.canvas,
     shapes: (saved.shapes ?? []).map(liftWindows),
     parts: (Array.isArray(saved.parts) ? saved.parts : []).map(liftWindows),
@@ -950,6 +955,8 @@ function unpackShape(raw: unknown, color: string): BossShape | null {
  */
 export function encodeBossCode(design: BossDesign): string {
   const out: Record<string, unknown> = { n: design.name.slice(0, CODE_LIMITS.name) };
+  if (design.settingsSource === 'battle') out.bs = 'battle';
+  if (design.battleCode) { decodeBattleCode(design.battleCode); out.b = design.battleCode; }
   if (design.canvas.w !== DEFAULT_CANVAS.w || design.canvas.h !== DEFAULT_CANVAS.h) {
     out.c = [int(design.canvas.w), int(design.canvas.h)];
   }
@@ -1006,6 +1013,9 @@ export function decodeBossCode(code: string, catalogNames: string[] = []): BossD
   const design = emptyDesign(
     typeof raw.n === 'string' && raw.n.trim() ? raw.n.trim().slice(0, CODE_LIMITS.name) : '받은 보스',
   );
+  if (raw.bs === 'battle') design.settingsSource = 'battle';
+  if (typeof raw.b === 'string') { decodeBattleCode(raw.b); design.battleCode = raw.b; }
+
   const numbers = (value: unknown, count: number): number[] | null => {
     if (!Array.isArray(value) || value.length !== count) return null;
     const out = value.map((entry) => Number(entry));

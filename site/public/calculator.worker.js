@@ -51,6 +51,8 @@ import sys
 if "${APP_ROOT}" not in sys.path:
     sys.path.insert(0, "${APP_ROOT}")
 from bridge import run_request, run_combat_power
+from growth_comparison import run_growth_comparison
+from recommendation import run_recommendation
 `);
   return manifest.version;
 }
@@ -75,20 +77,37 @@ async function handle(message) {
       return;
     }
     // 전투력은 목록 정렬용이라 타임라인 계산과 별개로 돈다 — 훨씬 가볍다.
+    if (type === 'recommend') {
+      post(id, 'progress', '입력 후보와 전투 조건을 비교하고 중복 없는 편성을 선택하고 있습니다…');
+      pyodide.globals.set('__nikke_request_json', JSON.stringify(payload ?? {}));
+      const raw = await pyodide.runPythonAsync('run_recommendation(__nikke_request_json)');
+      post(id, 'result', { ...JSON.parse(raw), engineVersion: version });
+      return;
+    }
+    if (type === 'compareGrowth') {
+      pyodide.globals.set('__nikke_request_json', JSON.stringify(payload ?? {}));
+      const raw = await pyodide.runPythonAsync('run_growth_comparison(__nikke_request_json)');
+      post(id, 'result', { ...JSON.parse(raw), engineVersion: version });
+      return;
+    }
     if (type === 'combatPower') {
       pyodide.globals.set('__nikke_request_json', JSON.stringify(payload ?? {}));
       const cp = await pyodide.runPythonAsync('run_combat_power(__nikke_request_json)');
       post(id, 'result', JSON.parse(cp));
       return;
     }
-    if (type !== 'simulate' || !payload) {
+    if (!['simulate', 'simulateMcp'].includes(type) || !payload) {
       throw new Error('지원하지 않는 계산 요청입니다.');
     }
 
     post(id, 'progress', '전투 타임라인을 계산하고 있습니다…');
     pyodide.globals.set('__nikke_request_json', JSON.stringify(payload));
-    const raw = await pyodide.runPythonAsync('run_request(__nikke_request_json)');
-    post(id, 'result', JSON.parse(raw));
+    const raw = await pyodide.runPythonAsync(type === 'simulateMcp'
+      ? 'run_request(__nikke_request_json, include_effective=True)'
+      : 'run_request(__nikke_request_json)');
+    const result = JSON.parse(raw);
+    if (type === 'simulateMcp') result.engineVersion = version;
+    post(id, 'result', result);
   } catch (error) {
     const messageText = error instanceof Error ? error.message : String(error);
     post(id, 'error', messageText);

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from copy import deepcopy
 
 from calculator.combat_power import combat_power
 from calculator.customization import (
@@ -14,10 +15,12 @@ from calculator.customization import (
     normalize_element_windows,
     normalize_hacks,
     normalize_immune_windows,
+    normalize_defense_rate_windows,
     normalize_normal_hit_coeff,
     normalize_burst_reaction,
     normalize_burst_sequence,
     normalize_optimal_range,
+    normalize_optimal_range_windows,
     normalize_synchro_level,
 )
 # `_is_normal`은 히트 태그로 일반공격을 가려내는 엔진 정본이다. 포크에서 다시
@@ -184,8 +187,11 @@ def _build_timeline(result, names: list[str], bucket: float = TIMELINE_BUCKET) -
 
     bursts = {name: [] for name in names}
     full_burst: list[list[float]] = []
+    summary = {"count": 0, "lastStart": None, "lastDuration": None,
+               "lastPlannedDuration": None, "lastTruncated": False}
     if result.log is not None:
         pending_start: float | None = None
+        planned_end: float | None = None
         for event in result.log.burst_log:
             if event.caster and event.caster in bursts and "사용" in event.event:
                 stage = ""
@@ -198,9 +204,34 @@ def _build_timeline(result, names: list[str], bucket: float = TIMELINE_BUCKET) -
                 bursts[event.caster].append(entry)
             elif event.event == "full_burst 시작":
                 pending_start = event.t
+                planned_end = event.planned_end
+                summary["count"] += 1
+                summary["lastStart"] = round(event.t, 2)
+                summary["lastPlannedDuration"] = (
+                    round(planned_end - event.t, 2) if planned_end is not None else None)
             elif event.event == "full_burst 종료" and pending_start is not None:
                 full_burst.append([round(pending_start, 2), round(event.t, 2)])
+                summary["lastDuration"] = round(event.t - pending_start, 2)
                 pending_start = None
+        if pending_start is not None:
+            end = min(result.duration, planned_end) if planned_end is not None else result.duration
+            full_burst.append([round(pending_start, 2), round(end, 2)])
+            summary["lastDuration"] = round(max(0, end - pending_start), 2)
+            summary["lastTruncated"] = planned_end is not None and planned_end > result.duration + 1e-8
+
+    # 버스트 게이지(%) — 칸 **끝** 시점의 값. 가산·소모 로그를 시간순으로 훑는다(이미 시간순이고,
+    # 같은 프레임에서는 소모가 가산보다 먼저 적힌다 — BurstController.tick이 캐릭터 tick보다 앞이다).
+    gauge: list[float] | None = None
+    if result.log is not None and result.log.gauge_log:
+        gauge = [0.0] * buckets
+        events = result.log.gauge_log
+        j, cur = 0, 0.0
+        for i in range(buckets):
+            end = (i + 1) * bucket + 1e-9
+            while j < len(events) and events[j].t <= end:
+                cur = events[j].gauge
+                j += 1
+            gauge[i] = round(cur, 1)
 
     return {
         "bucket": bucket,
@@ -208,7 +239,9 @@ def _build_timeline(result, names: list[str], bucket: float = TIMELINE_BUCKET) -
         "damage": damage,
         "bursts": bursts,
         "fullBurst": full_burst,
+        "fullBurstSummary": summary,
         "buffs": _build_buff_spans(result, names),
+        **({"gauge": gauge} if gauge is not None else {}),
     }
 
 
@@ -504,7 +537,7 @@ def run_combat_power(raw: str) -> str:
     return json.dumps(out, ensure_ascii=False, separators=(",", ":"))
 
 
-def run_request(raw: str) -> str:
+def run_request(raw: str, include_effective: bool = False) -> str:
     payload = json.loads(raw)
     _inject_custom_characters(payload.get("customCharacters") or {})
     names = [str(name).strip() for name in payload["squad"]]
@@ -542,6 +575,7 @@ def run_request(raw: str) -> str:
         for name in names:
             characters.setdefault(name, {})["burst_regen_time"] = burst_regen
     squad = char_spec.build_squad(names, characters)
+    effective = deepcopy(squad) if include_effective else None
     config_in: dict = {"duration": int(payload["duration"])}
     # 버스트 운용 배정 → config["burst_pattern"]. solo는 매 사이클 우선(전담),
     # skip은 가급적 안 씀. build_config는 여기서 준 값을 그대로 살린다(caller 우선).
@@ -570,6 +604,10 @@ def run_request(raw: str) -> str:
     if sequence is not None:
         config_in["burst_sequence"] = sequence
     # 버스트 반응속도 — 조건이 갖춰진 뒤 누르기까지. 전투 조건이라 config에 둔다.
+    first_burst = float(payload.get("firstBurstTime", 0))
+    if not math.isfinite(first_burst) or not 0 <= first_burst <= 3600:
+        raise ValueError("첫 버스트 시간은 0~3600초여야 합니다.")
+    config_in["first_burst_time"] = first_burst
     reaction = normalize_burst_reaction(payload.get("burstReaction"))
     if reaction is not None:
         config_in["burst_reaction"] = reaction
@@ -595,6 +633,12 @@ def run_request(raw: str) -> str:
     # 족자 중 버스트 게이지 정지 여부. 안 주면 켠 것으로 본다(인게임 기준).
     blocks = payload.get("immuneBlocksBurst")
     config_in["immune_blocks_burst"] = True if blocks is None else bool(blocks)
+    # 버스트 게이지 판정 — "new"(히트 실누적 = 엔진 accumulate) / "legacy"(고정 시간 = fixed).
+    # **안 주면 신 방식이다.** 이 항목이 생기기 전의 요청·저장본은 전부 신 방식으로 돈다.
+    gauge_mode = str(payload.get("burstGaugeMode") or "new")
+    if gauge_mode not in ("new", "legacy"):
+        raise ValueError("버스트 게이지 방식은 new 또는 legacy여야 합니다")
+    config_in["burst_gauge_mode"] = "accumulate" if gauge_mode == "new" else "fixed"
     # 핵. 하나도 안 켰으면 아예 안 싣는다 — 옛 요청과 캐시 키가 갈리지 않게.
     hacks = normalize_hacks(payload.get("hacks"))
     if hacks is not None:
@@ -605,16 +649,42 @@ def run_request(raw: str) -> str:
     if hit_coeff:
         config["normal_hit_coeff"] = hit_coeff
 
+    shotgun_rate = float(payload.get("shotgunHitRate", 1))
+    if not math.isfinite(shotgun_rate) or not 0 <= shotgun_rate <= 1:
+        raise ValueError("샷건 펠릿 명중 확률은 0~100%여야 합니다")
+    shotgun_model = payload.get('shotgunModel', 'legacy')
+    if shotgun_model not in ('legacy', 'spatial-v1', 'spatial-convergence-v1'):
+        raise ValueError('샷건 계산 방식이 올바르지 않습니다')
+    shotgun_diameter = float(payload.get('shotgunTargetDiameter', 360))
+    if not math.isfinite(shotgun_diameter) or not 1 <= shotgun_diameter <= 2000:
+        raise ValueError('보스 판정 직경은 1~2000이어야 합니다')
+    size_windows = payload.get('shotgunSizeWindows') or []
+    if not isinstance(size_windows, list) or len(size_windows) > 100:
+        raise ValueError('보스 크기 구간은 최대 100개입니다')
+    for i, w in enumerate(size_windows):
+        if not isinstance(w, dict) or not all(isinstance(w.get(k), (int, float)) and math.isfinite(w[k]) for k in ('from', 'to', 'diameter')) or not (0 <= w['from'] < w['to'] <= 180 and 1 <= w['diameter'] <= 2000):
+            raise ValueError('보스 크기 구간의 시간 또는 직경이 올바르지 않습니다')
+        if any(w['from'] < v['to'] and v['from'] < w['to'] for v in size_windows[:i]):
+            raise ValueError('보스 크기 구간은 서로 겹칠 수 없습니다')
     enemy = {
+        "shotgun_model": shotgun_model,
+        "shotgun_report": bool(payload.get('shotgunReport')),
+        "shotgun_target_diameter": shotgun_diameter,
+        "shotgun_size_windows": size_windows,
+        "shotgun_hit_rate": shotgun_rate,
+        **({"shotgun_geometry": payload["shotgunGeometry"]} if payload.get("shotgunGeometry") is not None else {}),
         "def": int(payload["enemyDef"]),
         "code": str(payload.get("enemyCode") or ""),
         "core_px": float(payload.get("corePx") or 0),
+        "core_windows": normalize_immune_windows(payload.get("coreWindows")),
+        "defense_rate_windows": normalize_defense_rate_windows(payload.get("defenseRateWindows")),
         "has_parts": bool(payload.get("hasParts")),
         # 적정거리는 무기군 단위로 켜진다 — 그 무기군의 일반 공격에만 ③ +30%.
         "optimal_range_weapons": normalize_optimal_range(
             payload.get("optimalRangeWeapons")
         ),
         # 보스 페이즈 — 족자(딜 차단)와 속저(우월 코드만 통과).
+        "optimal_range_windows": normalize_optimal_range_windows(payload.get("optimalRangeWindows")),
         "immune_windows": normalize_immune_windows(payload.get("immuneWindows")),
         "element_windows": normalize_element_windows(payload.get("elementWindows")),
     }
@@ -642,9 +712,15 @@ def run_request(raw: str) -> str:
         "duration": result.duration,
         "hitCount": len(result.hits),
         "charTotals": result.char_total,
+        **({"shotgunStats": result.shotgun_stats} if result.shotgun_stats else {}),
+        **({"shotgunReport": result.shotgun_report} if result.shotgun_report else {}),
         "charBreakdown": _build_breakdown(result, names),
         "previewNote": char_spec.preview_note(names),
-        "deviations": char_spec.format_deviations(squad),
+        "deviations": char_spec.format_deviations(squad) + (
+            "\n계산 한계: 마스트 : 로망틱 메이드의 취기 명중률 감소는 중첩되지만, "
+            "MG 탄착군은 현재 10px 고정 가정입니다. 예열·취기에 따른 탄착군 변화는 "
+            "실측 계수가 없어 반영되지 않으며, 10px 이상 코어의 크기 차이는 결과에 나타나지 않습니다."
+            if "마스트 : 로망틱 메이드" in names else ""),
         "timeline": _build_timeline(result, names),
         "buffTargets": _build_buff_targets(result, names),
     }
@@ -662,4 +738,6 @@ def run_request(raw: str) -> str:
         # 계산기 타임라인의 장탄 레인. 「왜 여기서 딜이 끊기나」가 대개 탄이 떨어져서라,
         # 초당 대미지와 같은 축에 깔면 재장전인지 버프가 꺼진 것인지가 갈린다.
         response["states"] = _build_states(result, names, STATE_BUCKET)
+    if include_effective:
+        response = {"result": response, "effectiveCharacters": effective}
     return json.dumps(response, ensure_ascii=False, separators=(",", ":"))

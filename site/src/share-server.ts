@@ -1,4 +1,5 @@
 import type { BattleShare } from './share-code';
+import type { BurstAssignment, CharacterControl } from './types';
 import { t } from './i18n';
 
 // 설정 공유 서버(`worker-share/`)와 이야기하는 쪽. 서버가 아는 것은 공유 코드 문자열과
@@ -94,6 +95,109 @@ export interface FeedbackInput {
   by: string;
 }
 
+// ── 계산기 레이드 ────────────────────────────────────────────────────────
+// 어드민이 전투 조건 코드 하나를 «레이드»로 올리면 모두가 같은 조건으로 다섯 덱을 돌려
+// 합산 딜을 겨룬다. 여럿이 동시에 열릴 수 있다.
+
+export type RaidStatus = 'open' | 'closed';
+
+export interface RaidSummary {
+  id: string;
+  title: string;
+  /** 전투 조건 한 줄 설명. 공유 목록과 같은 문장이다. */
+  auto: string;
+  /** 전투 조건 코드(NK3-). 이것으로 조건을 되읽는다. */
+  code: string;
+  status: RaidStatus;
+  openedAt: string;
+  closedAt: string;
+  count: number;
+}
+
+/** 기록에 실린 덱 한 칸. 남에게 보이는 것은 이것뿐이다. */
+export interface RaidDeck {
+  names: string[];
+  /** 조합 코드(NK2-). 「덱 가져오기」가 쓴다. */
+  code: string;
+  /** 버스트 순서 한 줄. 비어 있으면 자동이다. */
+  order: string;
+  dmg: number;
+  /** 니케별 큐브(이름·레벨). 남의 덱을 볼 때 «무슨 큐브 몇 레벨»을 읽는 자리다. 옛 기록엔 없다. */
+  cubes?: Record<string, { name: string; level: number }>;
+  /**
+   * 니케별 컨트롤·버스트 운용·무기 모드 전환 시각. 「편성·큐브·컨트롤 가져오기」와 「컨트롤 보기」가
+   * 읽는다. 톡톡이 발사 속도는 레이드 규칙(3.6발/s)으로 못 박혀 실린다. 옛 기록엔 없다.
+   */
+  controls?: Record<string, RaidControl>;
+}
+
+/** 기록에 실리는 니케 한 명의 컨트롤 묶음 — 카드의 «컨트롤 · 버스트» 판이 정하는 것들. */
+export interface RaidControl {
+  control?: CharacterControl;
+  burst?: BurstAssignment;
+  weaponModeSwapAt?: number;
+}
+
+export interface RaidEntry {
+  eid: string;
+  decks: RaidDeck[];
+  total: number;
+  engine: string;
+  at: string;
+  /**
+   * 익명 꼬리표(계정 해시 앞 네 글자). 누구인지는 알 수 없지만 «어제 그 참가자가
+   * 올라왔다»는 구분은 된다. 옛 기록엔 없다.
+   */
+  tag?: string;
+  /** 다른 레이드에서 재계산해 옮겨 온 기록이면 그 레이드 id. */
+  from?: string;
+  /** 엔진이 바뀐 뒤 어드민이 보관된 스펙으로 다시 계산한 시각. 남에게도 보인다 — «재계산됨». */
+  recalculatedAt?: string;
+  /** 어드민에게만 온다 — 표시 이름·서버·계정 꼬리·계정 해시(기록 옮기기의 «동일인» 열쇠). */
+  name?: string;
+  area?: number;
+  tail?: string;
+  owner?: string;
+}
+
+/** 기록 옮기기 한 줄 — 어드민 브라우저가 새 조건으로 다시 돌린 결과. */
+export interface RaidMigrateEntry {
+  owner: string;
+  name: string;
+  area: number;
+  tail: string;
+  decks: RaidDeck[];
+  total: number;
+  engine: string;
+  spec: unknown;
+}
+
+/** 자리 그대로 다시 계산한 결과 한 줄 — 어드민 브라우저가 새 엔진·조건으로 돌린 값. */
+export interface RaidRecalcEntry {
+  eid: string;
+  decks: RaidDeck[];
+  total: number;
+  engine: string;
+  spec: unknown;
+}
+
+export interface RaidBoard {
+  raid: RaidSummary;
+  entries: RaidEntry[];
+}
+
+export interface RaidEntryInput {
+  id: string;
+  openid: string;
+  name: string;
+  area: number;
+  decks: RaidDeck[];
+  total: number;
+  engine: string;
+  /** 어드민 재검증용 — 다섯 덱의 계산 요청 그대로. 남에게는 안 나간다. */
+  spec: unknown;
+}
+
 type Fetcher = typeof fetch;
 
 /**
@@ -172,7 +276,8 @@ export class ShareServer {
     const response = await this.fetcher(`${this.base}/upload`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
+      // The shared service keeps at most 160 characters; boss lists rebuild the full summary from NK3.
+      body: JSON.stringify(input.kind === 'boss' ? {...input,auto:input.auto.slice(0,160)} : input),
     });
     return this.unwrapKind<ShareUploadResult>(response);
   }
@@ -254,6 +359,124 @@ export class ShareServer {
     await this.unwrapReady<unknown>(response, '피드백');
   }
 
+  // ── 계산기 레이드 ──────────────────────────────────────────────────────
+
+  async raidList(): Promise<RaidSummary[]> {
+    const response = await this.fetcher(`${this.base}/raid`);
+    const result = await this.unwrapReady<{ raids?: RaidSummary[] }>(response, '계산기 레이드');
+    return result.raids ?? [];
+  }
+
+  /** 랭킹. 비밀번호를 주면 어드민 모양(누구인지 포함)으로 온다. */
+  async raidBoard(id: string, password = ''): Promise<RaidBoard> {
+    const response = password
+      ? await this.fetcher(`${this.base}/raid/board`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, password }),
+      })
+      : await this.fetcher(`${this.base}/raid/board?id=${encodeURIComponent(id)}`);
+    return this.unwrapReady<RaidBoard>(response, '계산기 레이드');
+  }
+
+  /** 기록 올리기. 더 낮은 기록이면 서버가 `kept: true`로 돌려주고 아무것도 안 바꾼다. */
+  async submitRaidEntry(input: RaidEntryInput): Promise<{ entry: RaidEntry; kept: boolean; replaced?: boolean }> {
+    const response = await this.fetcher(`${this.base}/raid/entry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return this.unwrapReady(response, '계산기 레이드');
+  }
+
+  async openRaid(input: { title: string; code: string; auto: string }, password: string): Promise<RaidSummary> {
+    const response = await this.fetcher(`${this.base}/raid/open`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...input, password }),
+    });
+    const result = await this.unwrapReady<{ raid: RaidSummary }>(response, '계산기 레이드');
+    return result.raid;
+  }
+
+  async closeRaid(id: string, password: string): Promise<RaidSummary> {
+    const response = await this.fetcher(`${this.base}/raid/close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, password }),
+    });
+    const result = await this.unwrapReady<{ raid: RaidSummary }>(response, '계산기 레이드');
+    return result.raid;
+  }
+
+  /** 닫은 레이드를 다시 연다 — 기록은 그대로, 제출만 다시 받는다. */
+  async reopenRaid(id: string, password: string): Promise<RaidSummary> {
+    const response = await this.fetcher(`${this.base}/raid/reopen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, password }),
+    });
+    const result = await this.unwrapReady<{ raid: RaidSummary }>(response, '계산기 레이드');
+    return result.raid;
+  }
+
+  /** 레이드를 통째로 지운다(랭킹·스펙까지). 서버가 닫은 것만 받는다. */
+  async deleteRaid(id: string, password: string): Promise<void> {
+    const response = await this.fetcher(`${this.base}/raid/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, password }),
+    });
+    await this.unwrapReady(response, '계산기 레이드');
+  }
+
+  async removeRaidEntry(id: string, eid: string, password: string): Promise<void> {
+    const response = await this.fetcher(`${this.base}/raid/remove`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, eid, password }),
+    });
+    await this.unwrapReady<unknown>(response, '계산기 레이드');
+  }
+
+  /** 어드민 재검증용 스펙. 기록을 올린 브라우저가 돌린 요청 그대로다. */
+  /** 다른 레이드의 기록을 이 레이드로. 서버가 동일인이 이미 있는 것은 건너뛴다. */
+  async migrateRaidEntries(
+    to: string, from: string, entries: RaidMigrateEntry[], password: string,
+  ): Promise<{ moved: number; skipped: number }> {
+    const response = await this.fetcher(`${this.base}/raid/migrate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to, from, entries, password }),
+    });
+    return this.unwrapReady(response, '계산기 레이드');
+  }
+
+  /**
+   * 이 레이드의 기록들을 **자리(eid) 그대로** 새 값으로 갈아 끼운다 — 엔진 알고리즘이 바뀌었을 때.
+   * `code`를 주면 레이드의 전투 조건 코드도 그것으로 바꾼다(버스트 게이지 신 방식 전환).
+   */
+  async recalcRaidEntries(
+    id: string, code: string, entries: RaidRecalcEntry[], password: string,
+  ): Promise<{ updated: number; missing: number }> {
+    const response = await this.fetcher(`${this.base}/raid/recalc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, code, entries, password }),
+    });
+    return this.unwrapReady(response, '계산기 레이드');
+  }
+
+  async raidSpec<T = unknown>(id: string, eid: string, password: string): Promise<T> {
+    const response = await this.fetcher(`${this.base}/raid/spec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, eid, password }),
+    });
+    const result = await this.unwrapReady<{ spec: T }>(response, '계산기 레이드');
+    return result.spec;
+  }
+
   async adminCheck(password: string): Promise<boolean> {
     const response = await this.fetcher(`${this.base}/admin/check`, {
       method: 'POST',
@@ -278,15 +501,27 @@ export class ShareServer {
 export function summarizeBattle(battle: BattleShare): string {
   // 값과 낱말이 섞인 한 줄이라 DOM 훑기로는 못 바꾼다 — 조각마다 사전을 지난다.
   const parts = [t('{n}초', { n: battle.duration })];
+  if (battle.shotgunSizeWindows?.length) parts.push('보스 크기 ' + battle.shotgunSizeWindows.map(w => `${w.from}~${w.to}초 직경 ${w.diameter}`).join('/'));
+  if (Object.keys(battle.firstBurstPerDeck ?? {}).length) parts.push('첫 버스트 덱별 ' + Object.entries(battle.firstBurstPerDeck!).map(([id, time]) => `덱${id} ${time}초`).join('/'));
+  else if (battle.firstBurstTime) parts.push(`첫 버스트 ${battle.firstBurstTime}초`);
+  parts.push(battle.shotgunModel && battle.shotgunModel !== 'legacy' ? `샷건 탄착군${battle.shotgunModel === 'spatial-convergence-v1' ? '·수렴 실험' : ''} 직경 ${battle.shotgunTargetDiameter ?? 360}` : `샷건 명중 ${Math.round((battle.shotgunHitRate ?? 1) * 10000) / 100}%`);
   parts.push(battle.enemyCode ? t('적 {code}', { code: t(battle.enemyCode) }) : t('무속성'));
   parts.push(battle.coreEnabled ? t('코어 {n}px', { n: battle.corePx }) : t('코어 없음'));
   if (battle.hasParts) parts.push(t('파츠'));
   if (battle.optimalRangeWeapons.length > 0) {
     parts.push(t('적정 {list}', { list: battle.optimalRangeWeapons.join('·') }));
   }
+  if (battle.optimalRangeWindows?.length) {
+    const windows=battle.optimalRangeWindows.map(window=>`${window.from}~${window.to}${t('초')} ${window.weapons.length?window.weapons.join('·'):t('없음')}`).join(' / ');
+    parts.push(`${t('유효 사거리')} ${windows} (${t('구간 밖')}: ${battle.optimalRangeWeapons.join('·')||t('없음')})`);
+  }
+  if (battle.defenseRateWindows?.length) parts.push(t('바디 방어율 {n}', { n: battle.defenseRateWindows.length }));
+  if (battle.coreWindows?.length) parts.push(t('코어 노출 {n}', { n: battle.coreWindows.length }));
   if (battle.immuneWindows.length > 0) parts.push(t('족자 {n}', { n: battle.immuneWindows.length }));
   if (battle.elementWindows.length > 0) parts.push(t('속저 {n}', { n: battle.elementWindows.length }));
   parts.push(battle.rngMode === 'expected' ? t('기대값') : t('난수'));
+  // 신 방식(히트 실누적)이 기본이라 구 방식일 때만 적는다 — 옛 요약 글이 흔들리지 않는다.
+  if (battle.burstGaugeMode === 'legacy') parts.push(t('버충 구 방식(고정 시간)'));
   return parts.join(' · ');
 }
 

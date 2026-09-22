@@ -57,12 +57,22 @@ export function normalizeRequest(request: SimulationRequest): SimulationRequest 
     enemyDef: Math.trunc(request.enemyDef),
     enemyCode: request.enemyCode,
     corePx: Math.trunc(request.corePx),
+    ...(request.shotgunModel !== undefined ? { shotgunModel: request.shotgunModel } : {}),
+    ...(request.shotgunSizeWindows?.length ? { shotgunSizeWindows: request.shotgunSizeWindows.map(w => ({ ...w })) } : {}),
+    ...(request.shotgunTargetDiameter !== undefined ? { shotgunTargetDiameter: request.shotgunTargetDiameter } : {}),
+    ...(request.shotgunHitRate !== undefined ? { shotgunHitRate: request.shotgunHitRate } : {}),
+    ...(request.shotgunGeometry ? { shotgunGeometry: structuredClone(request.shotgunGeometry) } : {}),
     hasParts: Boolean(request.hasParts),
     seed: Math.trunc(request.seed),
     // 고른 순서가 달라도 같은 설정이다 — 정렬해 캐시 키가 갈리지 않게 한다.
     ...(request.optimalRangeWeapons?.length
       ? { optimalRangeWeapons: [...request.optimalRangeWeapons].sort() } : {}),
     // 보스 페이즈는 시작 시각순으로 세운다 — 넣은 순서가 달라도 같은 설정이다.
+    ...(request.defenseRateWindows?.length ? { defenseRateWindows:
+      [...request.defenseRateWindows].sort((a, b) => a.from - b.from || a.to - b.to || a.rate - b.rate) } : {}),
+    ...(request.optimalRangeWindows?.length ? { optimalRangeWindows: request.optimalRangeWindows.map(w => ({ ...w, weapons: [...new Set(w.weapons)].sort() })).sort((a, b) => a.from - b.from || a.to - b.to || a.weapons.join(',').localeCompare(b.weapons.join(','))) } : {}),
+    ...(request.coreWindows?.length ? { coreWindows:
+      [...request.coreWindows].sort((a, b) => a.from - b.from || a.to - b.to) } : {}),
     ...(request.immuneWindows?.length ? { immuneWindows:
       [...request.immuneWindows].sort((a, b) => a.from - b.from || a.to - b.to) } : {}),
     ...(request.elementWindows?.length ? { elementWindows:
@@ -82,9 +92,12 @@ export function normalizeRequest(request: SimulationRequest): SimulationRequest 
     // 흔들려도 같은 설정이므로 정렬해 싣는다.
     ...(normalizeRecord(request.normalHitCoeff)
       ? { normalHitCoeff: normalizeRecord(request.normalHitCoeff)! } : {}),
+    // 게이지 방식은 **언제나** 싣는다 — 안 주면 신 방식이고, 그 결과는 옛(고정 시간) 캐시와 다르다.
+    burstGaugeMode: request.burstGaugeMode === 'legacy' ? 'legacy' : 'new',
     ...(request.burstRegenTime !== undefined
       ? { burstRegenTime: request.burstRegenTime } : {}),
     // 기본값(0.05초)은 요청에서 뺀다 — 엔진이 같은 값을 쓰므로 옛 캐시 키와 갈리지 않는다.
+    firstBurstTime: request.firstBurstTime ?? 0,
     ...(request.burstReaction !== undefined && request.burstReaction !== DEFAULT_BURST_REACTION
       ? { burstReaction: request.burstReaction } : {}),
     // 기본 레벨(400)은 요청에서 뺀다 — 엔진이 같은 값을 쓰므로 옛 캐시 키와 갈리지 않는다.
@@ -94,6 +107,7 @@ export function normalizeRequest(request: SimulationRequest): SimulationRequest 
     // 갈리지 않게 하려는 것으로, 다른 필드와 같은 규칙이다.
     ...(request.partBreakInterval ? { partBreakInterval: request.partBreakInterval } : {}),
     ...(request.shotTrack ? { shotTrack: true } : {}),
+    ...(request.shotgunReport ? { shotgunReport: true } : {}),
     ...(request.stateTrack ? { stateTrack: true } : {}),
     ...(request.piercePass && (request.piercePass.shapes > 1 || request.piercePass.parts > 0)
       ? { piercePass: request.piercePass } : {}),
@@ -202,6 +216,17 @@ export function validateRequest(request: SimulationRequest): string[] {
         && request.burstRegenTime >= 0 && request.burstRegenTime <= 20)) {
     errors.push('버스트 게이지 충전 시간은 0~20초여야 합니다.');
   }
+  const sizes = request.shotgunSizeWindows ?? [];
+  if (sizes.length > 100 || sizes.some(w => ![w.from, w.to, w.diameter].every(Number.isFinite) || w.from < 0 || w.to <= w.from || w.to > 180 || w.diameter < 1 || w.diameter > 2000)) errors.push('보스 크기 구간은 0~180초, 시작 < 종료, 직경 1~2000으로 입력하세요.');
+  if (sizes.some((w, i) => sizes.slice(i + 1).some(v => w.from < v.to && v.from < w.to))) errors.push('보스 크기 구간은 서로 겹칠 수 없습니다.');
+  if (request.shotgunModel !== undefined && !['legacy', 'spatial-v1', 'spatial-convergence-v1'].includes(request.shotgunModel)) errors.push('샷건 계산 방식이 올바르지 않습니다.');
+  if (request.shotgunTargetDiameter !== undefined && (!Number.isFinite(request.shotgunTargetDiameter) || request.shotgunTargetDiameter < 1 || request.shotgunTargetDiameter > 2000)) errors.push('보스 판정 직경은 1~2000이어야 합니다.');
+  if (request.shotgunHitRate !== undefined && (!Number.isFinite(request.shotgunHitRate) || request.shotgunHitRate < 0 || request.shotgunHitRate > 1)) {
+    errors.push('샷건 펠릿 명중 확률은 0~100%여야 합니다.');
+  }
+  if (request.firstBurstTime !== undefined && (!Number.isFinite(request.firstBurstTime) || request.firstBurstTime < 0 || request.firstBurstTime > 3600)) {
+    errors.push('첫 버스트 시간은 0~3600초여야 합니다.');
+  }
   if (request.burstReaction !== undefined
       && !(Number.isFinite(request.burstReaction)
         && request.burstReaction >= 0 && request.burstReaction <= 3)) {
@@ -209,6 +234,9 @@ export function validateRequest(request: SimulationRequest): string[] {
   }
   // 보스 페이즈 — 시작이 끝보다 뒤면 조용히 뒤집지 않고 막는다. 엔진도 같은 규칙이다.
   const windows: Array<[{ from: number; to: number }, string]> = [
+    ...(request.defenseRateWindows ?? []).map((w) => [w, '바디 방어율'] as [typeof w, string]),
+    ...(request.optimalRangeWindows ?? []).map((w) => [w, '유효 사거리'] as [typeof w, string]),
+    ...(request.coreWindows ?? []).map((w) => [w, '코어 노출'] as [typeof w, string]),
     ...(request.immuneWindows ?? []).map((w) => [w, '족자'] as [typeof w, string]),
     ...(request.elementWindows ?? []).map((w) => [w, '속저'] as [typeof w, string]),
   ];
@@ -218,6 +246,18 @@ export function validateRequest(request: SimulationRequest): string[] {
       errors.push(`${label} 구간은 0~180초여야 합니다.`);
     } else if (w.from >= w.to) {
       errors.push(`${label} 구간은 시작이 끝보다 앞서야 합니다 (${w.from}~${w.to}).`);
+    }
+  }
+
+  if ((request.optimalRangeWindows?.length ?? 0) > 100) errors.push('유효 사거리 구간은 최대 100개까지 지정할 수 있습니다.');
+  for (const w of request.optimalRangeWindows ?? []) {
+    if (!Array.isArray(w.weapons) || w.weapons.some(weapon => !['AR', 'SMG', 'SG', 'MG', 'SR', 'RL'].includes(weapon))) errors.push('유효 사거리 구간의 무기군을 확인해 주세요.');
+  }
+
+  if ((request.defenseRateWindows?.length ?? 0) > 100) errors.push('바디 방어율 구간은 최대 100개까지 지정할 수 있습니다.');
+  for (const w of request.defenseRateWindows ?? []) {
+    if (!Number.isFinite(w.rate) || w.rate < 0 || w.rate > 100) {
+      errors.push('바디 방어율은 0~100%여야 합니다.');
     }
   }
 
@@ -287,16 +327,25 @@ export function requestForDeck(
     hasParts: battle.hasParts,
     seed: battle.seed,
     optimalRangeWeapons: battle.optimalRangeWeapons,
+    coreWindows: battle.coreWindows,
+    optimalRangeWindows: battle.optimalRangeWindows,
+    defenseRateWindows: battle.defenseRateWindows,
     immuneWindows: battle.immuneWindows,
     elementWindows: battle.elementWindows,
     rngMode: battle.rngMode,
     immuneBlocksBurst: battle.immuneBlocksBurst,
     ...(hacksForRequest(battle.hacks) ? { hacks: battle.hacks! } : {}),
     normalHitCoeff: battle.normalHitCoeff,
+    ...(battle.shotgunSizeWindows?.length ? { shotgunSizeWindows: battle.shotgunSizeWindows.map(w => ({ ...w })) } : {}),
+    ...(battle.shotgunModel ? { shotgunModel: battle.shotgunModel, shotgunTargetDiameter: battle.shotgunTargetDiameter ?? 360 } : {}),
+    shotgunHitRate: battle.shotgunHitRate ?? 1,
     console: battle.console,
     // 덱마다 따로 잡아 뒀으면 그 값이 이긴다 — 버스트 쿨이 밀리는 덱만 달리 잰다.
+    // 게이지 방식은 언제나 싣는다 — 신 방식이 기본이 된 뒤의 결과와 옛 캐시가 섞이면 안 된다.
+    burstGaugeMode: battle.burstGaugeMode ?? 'new',
     burstRegenTime: battle.burstRegenPerDeck?.[deck.id] ?? battle.burstRegenTime,
     burstReaction: battle.burstReaction,
+    firstBurstTime: battle.firstBurstPerDeck?.[deck.id] ?? battle.firstBurstTime ?? 0,
     // 편성이 바뀌었으면 없는 이름을 떨궈서 싣는다 — 조용히 틀린 순서로 돌지 않게.
     ...(sequenceForDeck(deck) ? { burstSequence: sequenceForDeck(deck)! } : {}),
     // 장탄·재장전 트랙. 타임라인의 「장탄 표시」가 쓴다 — 딜이 끊긴 자리가 재장전인지
@@ -312,7 +361,18 @@ export function resetEnemy(battle: BattleSettings): BattleSettings {
     enemyCode: '',
     coreEnabled: false,
     corePx: 52,
+    bossSize: 'large',
+    ...(battle.shotgunModel ? { shotgunTargetDiameter: 360 } : {}),
+    shotgunHitRate: 1,
     hasParts: false,
+    corePerDeck: {},
+    optimalRangeWeapons: [],
+    optimalRangeWindows: [],
+    shotgunSizeWindows: [],
+    coreWindows: [],
+    defenseRateWindows: [],
+    immuneWindows: [],
+    elementWindows: [],
   };
 }
 
